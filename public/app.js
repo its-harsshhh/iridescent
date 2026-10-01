@@ -214,6 +214,23 @@ function lifeKeys(ci, base, from, to) {
   return [[0, base]];
 }
 
+// The grain is the same noise every frame, so render it once as a small seamless
+// tile instead of regenerating fractal noise per pixel per frame (~40% of the cost).
+// The copied SVG code keeps feTurbulence so it stays tiny.
+const GRAIN_T = 64;
+let grainTile = null;
+(function makeGrainTile() {
+  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${GRAIN_T}" height="${GRAIN_T}"><filter id="g" filterUnits="userSpaceOnUse" x="0" y="0" width="${GRAIN_T}" height="${GRAIN_T}" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="1.1" seed="7" stitchTiles="stitch"/></filter><rect width="${GRAIN_T}" height="${GRAIN_T}" filter="url(#g)"/></svg>`;
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = c.height = GRAIN_T;
+    c.getContext('2d').drawImage(im, 0, 0);
+    try { grainTile = c.toDataURL('image/png'); schedule(); } catch (e) { /* keep feTurbulence */ }
+  };
+  im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+})();
+
 function geom() {
   const Hc = HC, Wc = HC * src.aspect;
   const sig2 = S.softness / 100 * Hc * src.thick;
@@ -282,7 +299,9 @@ function build(o) {
 `<feGaussianBlur in="d" stdDeviation="${n3(tS2.v)}" result="b2">${tS2.a}</feGaussianBlur>` +
 `<feComposite in="b1" in2="b2" operator="arithmetic" k2="${n3(S.crisp)}" k3="${n3(1 - S.crisp)}" result="v"/>` +
 `<feColorMatrix in="v" values="${row} ${row} ${row} 0 0 0 0 1" result="i"/>` +
-`<feTurbulence type="fractalNoise" baseFrequency="1.1" seed="7" result="n"/>` +
+(o.fast && grainTile
+  ? `<feImage href="${grainTile}" x="0" y="0" width="${GRAIN_T}" height="${GRAIN_T}" preserveAspectRatio="none" result="n0"/><feTile in="n0" result="n"/>`
+  : `<feTurbulence type="fractalNoise" baseFrequency="1.1" seed="7" result="n"/>`) +
 `<feComposite in="i" in2="n" operator="arithmetic" k2="1" k3="${n3(gr)}" k4="${n3(-gr / 2)}"/>` +
 `<feComponentTransfer result="c"><feFuncR type="table" tableValues="${pal.r}"/><feFuncG type="table" tableValues="${pal.g}"/><feFuncB type="table" tableValues="${pal.b}"/></feComponentTransfer>` +
 `<feComponentTransfer in="v"><feFuncA type="linear" slope="${n3(slope)}" intercept="-.04"/></feComponentTransfer>` +
@@ -364,8 +383,8 @@ function frameBox(frame) {
   return { x: (g.W - w) / 2, y: (g.H - h) / 2, w, h };
 }
 
-function exportSVG({ time = null, intro = true, width, height, bg, frame = 'original' } = {}) {
-  const p = build({ id: 'ir', time, intro });
+function exportSVG({ time = null, intro = true, width, height, bg, frame = 'original', fast = false } = {}) {
+  const p = build({ id: 'ir', time, intro, fast });
   const b = frameBox(frame);
   const vb = `${n3(b.x)} ${n3(b.y)} ${n3(b.w)} ${n3(b.h)}`;
   const wh = width ? ` width="${width}" height="${height}"` : '';
@@ -381,7 +400,7 @@ function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; ren
 
 function renderPreview() {
   if (!src.href) return;
-  const p = build({ id: 'pv', intro: true });
+  const p = build({ id: 'pv', intro: true, fast: true });
   const { g, img } = p;
   svg.setAttribute('viewBox', `0 0 ${n3(g.W)} ${n3(g.H)}`);
   for (const [k, v] of Object.entries({ x: 0, y: 0, width: n3(g.W), height: n3(g.H) })) pvMask.setAttribute(k, v);
@@ -394,14 +413,25 @@ function renderPreview() {
   fit();
 }
 
+// SVG filters cost per device pixel, every frame. The preview renders against a
+// pixel budget (smaller on touch devices) and is scaled up with a compositor
+// transform; a frame-rate governor lowers or raises resolution to hold ~60fps.
+// The glow is soft, so the difference is hard to see. Exports always render at full size.
+const COARSE = matchMedia('(pointer: coarse)').matches;
+const PIXEL_BUDGET = COARSE ? 140000 : 520000;
+let govScale = 1;
 function fit() {
   const g = geom();
   const cs = getComputedStyle(canvasWrap);
   const aw = canvasWrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const ah = canvasWrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   const sc = Math.max(0.05, Math.min(aw / g.W, ah / g.H));
-  svg.setAttribute('width', Math.floor(g.W * sc));
-  svg.setAttribute('height', Math.floor(g.H * sc));
+  const cw = Math.floor(g.W * sc), ch = Math.floor(g.H * sc);
+  const dpr = window.devicePixelRatio || 1;
+  const k = Math.min(dpr * 1.5, Math.max(1, Math.sqrt(cw * ch * dpr * dpr / PIXEL_BUDGET)) * govScale);
+  svg.setAttribute('width', Math.max(1, Math.round(cw / k)));
+  svg.setAttribute('height', Math.max(1, Math.round(ch / k)));
+  svg.style.transform = k > 1.01 ? `scale(${n3(k)})` : '';
 }
 new ResizeObserver(() => fit()).observe(canvasWrap);
 
@@ -413,12 +443,24 @@ function setFill(el) {
   const min = +el.min || 0, max = +el.max || 1;
   el.style.setProperty('--p', ((el.value - min) / (max - min) * 100).toFixed(2) + '%');
 }
-(function tick() {
+let lastLabel = '', govFrames = 0, govT = performance.now(), govFast = 0;
+(function tick(now) {
   const L = loopLen();
   const t = svg.getCurrentTime ? svg.getCurrentTime() : 0;
   const pos = t % L;
   if (!scrubbing) { scrub.value = pos / L; setFill(scrub); }
-  timeLabel.textContent = `${pos.toFixed(1)} / ${L.toFixed(1)}s`;
+  const label = `${pos.toFixed(1)} / ${L.toFixed(1)}s`;
+  if (label !== lastLabel) { timeLabel.textContent = label; lastLabel = label; }
+  // Frame-rate governor (ignores throttled/background tabs and paused playback).
+  govFrames++;
+  if (now && now - govT >= 1000) {
+    const fps = govFrames * 1000 / (now - govT);
+    govFrames = 0; govT = now;
+    if (document.visibilityState === 'visible' && !svg.animationsPaused() && !dlg.open && fps > 8) {
+      if (fps < 45 && govScale < 2.2) { govScale = Math.min(2.2, govScale * 1.2); govFast = 0; fit(); }
+      else if (fps > 57 && govScale > 1 && ++govFast >= 3) { govScale = Math.max(1, govScale / 1.12); govFast = 0; fit(); }
+    }
+  }
   requestAnimationFrame(tick);
 })();
 scrub.addEventListener('input', () => {
@@ -1107,6 +1149,9 @@ function openExport(tab) {
   dlg.classList.remove('closing');
   renderExport({ first: true });
   dlg.showModal();
+  // The dialog has its own animated preview; don't render two behind a blurred backdrop.
+  resumeAfterDialog = !svg.animationsPaused();
+  if (resumeAfterDialog) svg.pauseAnimations();
   Kit.sound.open();
   requestAnimationFrame(() => moveTabIndicator(false));
 }
@@ -1122,8 +1167,10 @@ function closeExport() {
 }
 dlg.addEventListener('cancel', e => { e.preventDefault(); closeExport(); });
 dlg.querySelector('.x-btn').addEventListener('click', e => { e.preventDefault(); closeExport(); });
+let resumeAfterDialog = false;
 dlg.addEventListener('close', () => {
   cancelled = true;
+  if (resumeAfterDialog) { svg.unpauseAnimations(); resumeAfterDialog = false; }
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; dlgImg.removeAttribute('src'); }
 });
 dlg.addEventListener('click', e => { if (e.target === dlg && !busy) closeExport(); });
@@ -1523,6 +1570,7 @@ window.iridescent = {
   set(o) { Object.assign(S, o); save(); buildPanel(); Object.keys(o).some(k => SOURCE_KEYS.has(k)) ? processSource() : schedule(); },
   svg: () => codeSVG(),
   svgAt: (t, intro = true, w = 800) => exportSVG({ time: t, intro, width: w, height: Math.round(w * geom().H / geom().W) }),
+  frameSVG: (t, w = 800) => exportSVG({ time: t, intro: true, width: w, height: Math.round(w * geom().H / geom().W), fast: true }),
   copy: copySVG,
   open: openExport,
   export: doExport,

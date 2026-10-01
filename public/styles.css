@@ -676,3 +676,6 @@ select.input {
 .vanish-opts.reveal { animation: swap-in 260ms var(--swift); }
 .chip-icon { width: 40px; padding: 0; justify-content: center; }
 .chip-icon .mi { width: 18px; height: 18px; }
+
+/* Preview renders below device resolution and is scaled up on the compositor (see fit()). */
+#preview { transform-origin: center; will-change: transform; }
