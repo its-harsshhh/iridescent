@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Iridescent — fluid logo animator</title>
+<meta name="description" content="Turn any logo into a fluid, iridescent animation. Export MP4, GIF or a tiny animated SVG.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='g'%3E%3Cstop offset='.3' stop-color='%230a0f5c'/%3E%3Cstop offset='.5' stop-color='%232c78e4'/%3E%3Cstop offset='.62' stop-color='%238fd3ff'/%3E%3Cstop offset='.75' stop-color='%23ffa04a'/%3E%3Cstop offset='.86' stop-color='%23ff4b2f'/%3E%3Cstop offset='1' stop-color='%23ff52c8'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='15' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Instrument+Serif&family=Fredoka:wght@500;700&family=Baloo+2:wght@700;800&family=Unbounded:wght@600;800&family=Syne:wght@700;800&family=Bricolage+Grotesque:wght@600;800&family=Archivo+Black&family=Rubik:wght@600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">Iridescent</span>
+    <span class="brand-sub">Make any logo fluid</span>
+  </div>
+  <div class="top-actions">
+    <button id="btnUpload" class="btn btn-ghost">Upload logo</button>
+    <div class="menu-wrap">
+      <button id="btnExport" class="btn btn-dark" aria-haspopup="menu" aria-expanded="false">
+        Export
+        <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="menu" id="exportMenu" role="menu" hidden>
+        <button role="menuitem" data-open="video"><b>Video</b><span>MP4 for Instagram, X, LinkedIn</span></button>
+        <button role="menuitem" data-open="gif"><b>GIF</b><span>For Slack, Notion, email</span></button>
+        <button role="menuitem" data-open="code"><b>SVG code</b><span>Tiny animated file for websites</span></button>
+        <button role="menuitem" data-open="image"><b>Image</b><span>PNG still or transparent frames</span></button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage" id="stage">
+    <div class="canvas" id="canvas">
+      <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Animated logo preview">
+        <defs><mask id="pvm" maskUnits="userSpaceOnUse" mask-type="alpha" style="mask-type:alpha"><image id="pvImg" preserveAspectRatio="none"/></mask></defs>
+        <g id="pvDyn"></g>
+      </svg>
+    </div>
+    <div class="drop-hint" id="dropHint"><div>Drop your logo<small>PNG · SVG · JPG · WebP</small></div></div>
+    <div class="transport">
+      <button class="icon-btn" id="btnPlay" title="Play / pause (Space)" aria-label="Play or pause">
+        <svg viewBox="0 0 24 24" class="i-pause"><rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/></svg>
+        <svg viewBox="0 0 24 24" class="i-play"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+      </button>
+      <button class="icon-btn" id="btnReplay" title="Replay intro" aria-label="Replay intro">
+        <svg viewBox="0 0 24 24"><path d="M5.5 9.5A7 7 0 1 1 5 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 4.5v5.5h5.5z"/></svg>
+      </button>
+      <input type="range" id="scrub" class="scrub" min="0" max="1" step="0.001" value="0" aria-label="Loop position">
+      <span class="time" id="timeLabel">0.0 / 4.4s</span>
+    </div>
+  </section>
+  <aside class="panel" id="panel"></aside>
+</main>
+
+<dialog class="dlg" id="exportDlg">
+  <form method="dialog" class="dlg-inner" id="exportForm">
+    <header class="dlg-head">
+      <div class="tabs" role="tablist" id="exportTabs">
+        <button type="button" role="tab" data-tab="video">Video</button>
+        <button type="button" role="tab" data-tab="gif">GIF</button>
+        <button type="button" role="tab" data-tab="code">SVG code</button>
+        <button type="button" role="tab" data-tab="image">Image</button>
+      </div>
+      <button class="x-btn" value="close" aria-label="Close">
+        <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="dlg-body">
+      <div class="dlg-preview" id="dlgPreview"><img id="dlgImg" alt="Export preview"></div>
+      <div class="dlg-opts" id="dlgOpts"></div>
+    </div>
+    <footer class="dlg-foot" id="dlgFoot"></footer>
+  </form>
+</dialog>
+
+<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,.svg" hidden>
+<div class="toast" id="toast" role="status"></div>
+<script src="app.js?v=3" defer></script>
+</body>
+</html>
