@@ -40,6 +40,7 @@ const DEFAULTS = {
   speed: 1, stripeStrength: 0.35, stripeWidth: 1.5, stripeSharp: 0, stripeAngle: 0, stripePasses: 1, stripeReverse: false,
   flow: 3, flowScale: 1, flowMorph: 0.15, flowCycles: 1, seed: 2,
   intro: true, introDur: 1.6, introSmear: 40, introMelt: 12,
+  vanish: false, vanishStyle: 'dissolve', vanishDir: 'ltr', vanishDur: 1.4, vanishHold: 1.5,
   palette: 'Iridescent', stops: PRESETS.Iridescent.map(s => s.slice()),
   bg: '#ffffff', bgTransparent: false, padding: 10,
   ex: { frame: 'square', quality: 1080, fps: 30, length: 'loop', start: 0, dur: 3, at: 2, gif: 640, transparent: true, lottieFormat: 'dot', lottieSize: 512, lottieFps: 24 },
@@ -144,11 +145,82 @@ function cssGradient(stops) {
 //        │
 //   composited "in" an alpha curve of v (+ halo grain)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Timeline. Without "vanish" the intro plays once. With it, everything runs on
+// one repeating cycle: intro → hold → vanish → short gap, rounded up to whole
+// shimmer loops so the stripe and fluid stay seamless.
+// ---------------------------------------------------------------------------
+const VANISH_STYLES = {
+  // amp: noise in the vanish mask (grain), slope: edge hardness,
+  // freq: grain size, blur/smear/rise: what happens to the letters as they go.
+  dissolve:  { label: 'Dissolve',  amp: 1.1, slope: 10, freq: 0.07, blur: 0.25, smear: 0,    rise: 0 },
+  melt:      { label: 'Melt',      amp: 0.3, slope: 3,  freq: 0.02, blur: 1.4,  smear: 0.35, rise: 0 },
+  evaporate: { label: 'Evaporate', amp: 0.9, slope: 7,  freq: 0.045, blur: 0.7, smear: 0.1,  rise: 0.18 },
+  fade:      { label: 'Fade',      amp: 0,   slope: 1,  freq: 0.02, blur: 0.15, smear: 0,    rise: 0 },
+};
+const VANISH_DIRS = { ltr: 'Left to right', rtl: 'Right to left', center: 'From the centre', all: 'All at once' };
+const SPL_LINEAR = '0 0 1 1';
+const SPL_OUT = '.55 0 .85 .45';   // vanish accelerates away
+
+function cycleInfo(introWanted = true) {
+  const L = BASE_LOOP / S.speed;
+  const introOn = !!(introWanted && S.intro);
+  if (!S.vanish) return { vanish: false, introOn, ID: S.introDur, C: L };
+  const ID = introOn ? S.introDur : 0.35;
+  const VD = S.vanishDur, gap = 0.35;
+  const C = Math.max(1, Math.ceil((ID + S.vanishHold + VD + gap) / L - 1e-6)) * L;
+  return { vanish: true, introOn, ID, VD, C, tv1: C - gap, tv0: C - gap - VD };
+}
+
+const easeCache = {};
+const easeFor = spl => easeCache[spl] || (easeCache[spl] = bezier(...spl.split(' ').map(Number)));
+const asArr = v => Array.isArray(v) ? v : [v];
+const fmtV = v => asArr(v).map(n3).join(' ');
+function evalKeys(keys, t) {
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, v1, spl] = keys[i];
+    if (t <= t1) {
+      const [t0, v0] = keys[i - 1];
+      const p = t1 > t0 ? easeFor(spl || SPL_LINEAR)((t - t0) / (t1 - t0)) : 1;
+      const a = asArr(v0), b = asArr(v1);
+      const out = a.map((x, k) => lerp(x, b[k], p));
+      return Array.isArray(v0) ? out : out[0];
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+// One animated attribute. Returns the static value (for frames) or the base value plus SMIL.
+function track(attr, keys, ci, stat, t, transform) {
+  const flat = keys.every(k => fmtV(k[1]) === fmtV(keys[0][1]));
+  if (stat) return { v: evalKeys(keys, ci.vanish ? t % ci.C : t), a: '' };
+  const last = keys[keys.length - 1][1];
+  if (flat) return { v: last, a: '' };
+  const dur = ci.vanish ? ci.C : keys[keys.length - 1][0];
+  const ks = keys.slice();
+  if (ks[0][0] > 0) ks.unshift([0, ks[0][1]]);
+  if (ks[ks.length - 1][0] < dur) ks.push([dur, ks[ks.length - 1][1]]);
+  const tag = transform ? `animateTransform attributeName="${attr}" type="${transform}"` : `animate attributeName="${attr}"`;
+  const timing = ci.vanish ? 'repeatCount="indefinite"' : 'fill="freeze"';
+  return {
+    v: ci.vanish ? evalKeys(keys, ci.tv0 || 0) : last,
+    a: `<${tag} values="${ks.map(k => fmtV(k[1])).join(';')}" keyTimes="${ks.map(k => n3(k[0] / dur)).join(';')}" calcMode="spline" keySplines="${ks.slice(1).map(k => k[2] || SPL_LINEAR).join(';')}" dur="${n3(dur)}s" ${timing}/>`,
+  };
+}
+// intro value → base (eases in), held, then → vanish value (accelerates out)
+function lifeKeys(ci, base, from, to) {
+  if (ci.vanish) return [[0, ci.introOn ? from : base], [ci.ID, base, SPL_INTRO], [ci.tv0, base], [ci.tv1, to, SPL_OUT], [ci.C, to]];
+  if (ci.introOn) return [[0, from], [ci.ID, base, SPL_INTRO]];
+  return [[0, base]];
+}
+
 function geom() {
   const Hc = HC, Wc = HC * src.aspect;
   const sig2 = S.softness / 100 * Hc * src.thick;
   const scale = S.flow / 100 * Hc * 2 * Math.sqrt(src.thick);
-  const pad = Math.ceil(sig2 * (2 + S.halo) + scale * 0.6 + S.padding / 100 * Hc);
+  const vs = S.vanish ? VANISH_STYLES[S.vanishStyle] || VANISH_STYLES.dissolve : null;
+  const rise = vs ? vs.rise * Hc : 0;
+  const pad = Math.ceil(sig2 * (2 + S.halo) + scale * 0.6 + S.padding / 100 * Hc + rise * 0.5);
   return { Wc, Hc, pad, W: Wc + 2 * pad, H: Hc + 2 * pad, sig2, sig1: sig2 * 0.3, scale };
 }
 
@@ -157,8 +229,6 @@ function build(o) {
   const id = o.id;
   const stat = o.time != null;
   const t = o.time || 0;
-  const introOn = !!(o.intro && S.intro);
-  const ID = S.introDur;
   const L = BASE_LOOP / S.speed;
   const Ls = L / S.stripePasses, Lf = L / S.flowCycles;
 
@@ -186,17 +256,16 @@ function build(o) {
     fA = `<animate attributeName="baseFrequency" values="${n5(f1)};${n5(f2)};${n5(f1)}" keyTimes="0;.5;1" calcMode="spline" keySplines="${SPL_IO};${SPL_IO}" dur="${n3(Lf)}s" repeatCount="indefinite"/>`;
   }
 
-  // --- intro ----------------------------------------------------------------
+  // --- intro / vanish ---------------------------------------------------------
+  const ci = cycleInfo(o.intro);
+  const vs = VANISH_STYLES[S.vanishStyle] || VANISH_STYLES.dissolve;
   const smear = S.introSmear / 100 * g.Hc * 2 * Math.sqrt(src.thick), melt = S.introMelt / 100 * g.Hc * src.thick;
-  const e = introOn && stat ? EASE_INTRO(clamp(t / ID)) : 1;
-  const k = introOn && stat;
-  const scaleV = k ? lerp(smear, g.scale, e) : g.scale;
-  const s1V = k ? g.sig1 + melt * .6 * (1 - e) : g.sig1;
-  const s2V = k ? g.sig2 + melt * (1 - e) : g.sig2;
-  const opV = k ? clamp(t / (ID * .45)) : 1;
-  const ia = (attr, from, to) => introOn && !stat
-    ? `<animate attributeName="${attr}" values="${n3(from)};${n3(to)}" keyTimes="0;1" calcMode="spline" keySplines="${SPL_INTRO}" dur="${n3(ID)}s" fill="freeze"/>`
-    : '';
+  const tScale = track('scale', lifeKeys(ci, g.scale, smear, g.scale + vs.smear * g.Hc), ci, stat, t);
+  const tS1 = track('stdDeviation', lifeKeys(ci, g.sig1, g.sig1 + melt * .6, g.sig1 + vs.blur * g.sig2 * .6), ci, stat, t);
+  const tS2 = track('stdDeviation', lifeKeys(ci, g.sig2, g.sig2 + melt, g.sig2 * (1 + vs.blur)), ci, stat, t);
+  const opKeys = ci.vanish ? [[0, 0], [ci.introOn ? ci.ID * .45 : ci.ID, 1, SPL_LINEAR], [ci.C, 1]]
+    : ci.introOn ? [[0, 0], [ci.ID * .45, 1, SPL_LINEAR]] : [[0, 1]];
+  const tOp = track('opacity', opKeys, ci, stat, t);
 
   // --- colour ---------------------------------------------------------------
   const d = S.depth, s = S.stripeStrength, off = d + S.shift;
@@ -208,9 +277,9 @@ function build(o) {
   const filter =
 `<filter id="${id}f" filterUnits="userSpaceOnUse" x="0" y="0" width="${n3(g.W)}" height="${n3(g.H)}" color-interpolation-filters="sRGB">` +
 `<feTurbulence type="fractalNoise" baseFrequency="${n5(freq)}" numOctaves="2" seed="${S.seed}" result="w">${fA}</feTurbulence>` +
-`<feDisplacementMap in="SourceGraphic" in2="w" scale="${n3(scaleV)}" xChannelSelector="R" yChannelSelector="G" result="d">${ia('scale', smear, g.scale)}</feDisplacementMap>` +
-`<feGaussianBlur in="d" stdDeviation="${n3(s1V)}" result="b1">${ia('stdDeviation', g.sig1 + melt * .6, g.sig1)}</feGaussianBlur>` +
-`<feGaussianBlur in="d" stdDeviation="${n3(s2V)}" result="b2">${ia('stdDeviation', g.sig2 + melt, g.sig2)}</feGaussianBlur>` +
+`<feDisplacementMap in="SourceGraphic" in2="w" scale="${n3(tScale.v)}" xChannelSelector="R" yChannelSelector="G" result="d">${tScale.a}</feDisplacementMap>` +
+`<feGaussianBlur in="d" stdDeviation="${n3(tS1.v)}" result="b1">${tS1.a}</feGaussianBlur>` +
+`<feGaussianBlur in="d" stdDeviation="${n3(tS2.v)}" result="b2">${tS2.a}</feGaussianBlur>` +
 `<feComposite in="b1" in2="b2" operator="arithmetic" k2="${n3(S.crisp)}" k3="${n3(1 - S.crisp)}" result="v"/>` +
 `<feColorMatrix in="v" values="${row} ${row} ${row} 0 0 0 0 1" result="i"/>` +
 `<feTurbulence type="fractalNoise" baseFrequency="1.1" seed="7" result="n"/>` +
@@ -230,12 +299,51 @@ function build(o) {
     img = { href: src.href, x: g.pad, y: g.pad, w: g.Wc, h: g.Hc };
   }
 
-  const opAttr = stat ? (opV < 1 ? ` opacity="${n3(opV)}"` : '') : '';
-  const opAnim = introOn && !stat ? `<animate attributeName="opacity" values="0;1" dur="${n3(ID * .45)}s" fill="freeze"/>` : '';
-  const body = `<g filter="url(#${id}f)"${opAttr}>${opAnim}<rect width="${n3(g.W)}" height="${n3(g.H)}" fill="url(#${id}s)" mask="url(#${id}m)"/></g>`;
+  const opAttr = tOp.v < 1 ? ` opacity="${n3(tOp.v)}"` : '';
+  let body = `<g filter="url(#${id}f)"${opAttr}>${tOp.a}<rect width="${n3(g.W)}" height="${n3(g.H)}" fill="url(#${id}s)" mask="url(#${id}m)"/></g>`;
+
+  // --- vanish mask: a ramp (or uniform level) + noise, thresholded into grain ---
+  let vdefs = '';
+  if (ci.vanish) {
+    const W = g.W, H = g.H, B = Math.max(60, g.Wc * 0.55);
+    const amp = vs.amp, sl = vs.slope, icp = n3(0.5 - 0.5 * sl);
+    let fill = '';
+    if (S.vanishDir === 'ltr' || S.vanishDir === 'rtl') {
+      const ltr = S.vanishDir === 'ltr';
+      const from = ltr ? [-B, 0] : [W, 0], to = ltr ? [W, 0] : [-B, 0];
+      const tr = track('gradientTransform', [[0, from], [ci.tv0, from], [ci.tv1, to, SPL_IO], [ci.C, to]], ci, stat, t, 'translate');
+      vdefs += `<linearGradient id="${id}vg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${n3(B)}" y2="0" gradientTransform="translate(${fmtV(tr.v)})">` +
+        `<stop offset="0" stop-color="${ltr ? '#000' : '#fff'}"/><stop offset="1" stop-color="${ltr ? '#fff' : '#000'}"/>${tr.a}</linearGradient>`;
+      fill = `<rect width="${n3(W)}" height="${n3(H)}" fill="url(#${id}vg)"/>`;
+    } else if (S.vanishDir === 'center') {
+      const R0 = 1, R1 = Math.hypot(W, H) / 2 / 0.6;
+      const tr = track('r', [[0, R0], [ci.tv0, R0], [ci.tv1, R1, SPL_IO], [ci.C, R1]], ci, stat, t);
+      vdefs += `<radialGradient id="${id}vg" gradientUnits="userSpaceOnUse" cx="${n3(W / 2)}" cy="${n3(H / 2)}" r="${n3(tr.v)}">` +
+        `<stop offset="0" stop-color="#000"/><stop offset=".6" stop-color="#000"/><stop offset="1" stop-color="#fff"/>${tr.a}</radialGradient>`;
+      fill = `<rect width="${n3(W)}" height="${n3(H)}" fill="url(#${id}vg)"/>`;
+    } else {
+      const tr = track('opacity', [[0, 1], [ci.tv0, 1], [ci.tv1, 0, SPL_IO], [ci.C, 0]], ci, stat, t);
+      fill = `<rect width="${n3(W)}" height="${n3(H)}" fill="#000"/><rect width="${n3(W)}" height="${n3(H)}" fill="#fff" opacity="${n3(tr.v)}">${tr.a}</rect>`;
+    }
+    vdefs +=
+      `<filter id="${id}vf" filterUnits="userSpaceOnUse" x="0" y="0" width="${n3(W)}" height="${n3(H)}" color-interpolation-filters="sRGB">` +
+      `<feTurbulence type="fractalNoise" baseFrequency="${n5(vs.freq * 300 / g.Hc / Math.max(.35, src.thick))}" numOctaves="2" seed="${S.seed + 11}" result="vn"/>` +
+      `<feColorMatrix in="vn" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1"/>` +
+      // fractal noise bunches around 0.5; stretch it so grains appear across the whole vanish
+      `<feComponentTransfer result="vr"><feFuncR type="linear" slope="3.2" intercept="-1.1"/><feFuncG type="linear" slope="3.2" intercept="-1.1"/><feFuncB type="linear" slope="3.2" intercept="-1.1"/></feComponentTransfer>` +
+      `<feComposite in="SourceGraphic" in2="vr" operator="arithmetic" k2="${n3(1 + amp)}" k3="${n3(amp)}" k4="${n3(-amp)}"/>` +
+      `<feComponentTransfer><feFuncR type="linear" slope="${sl}" intercept="${icp}"/><feFuncG type="linear" slope="${sl}" intercept="${icp}"/><feFuncB type="linear" slope="${sl}" intercept="${icp}"/></feComponentTransfer>` +
+      `</filter>` +
+      `<mask id="${id}vm" maskUnits="userSpaceOnUse" x="0" y="0" width="${n3(W)}" height="${n3(H)}"><g filter="url(#${id}vf)">${fill}</g></mask>`;
+    body = `<g mask="url(#${id}vm)">${body}</g>`;
+    if (vs.rise) {
+      const tr = track('transform', [[0, [0, 0]], [ci.tv0, [0, 0]], [ci.tv1, [0, -vs.rise * g.Hc], SPL_OUT], [ci.C, [0, -vs.rise * g.Hc]]], ci, stat, t, 'translate');
+      body = `<g transform="translate(${fmtV(tr.v)})">${tr.a}${body}</g>`;
+    }
+  }
   const mask = `<mask id="${id}m" maskUnits="userSpaceOnUse" x="0" y="0" width="${n3(g.W)}" height="${n3(g.H)}" mask-type="alpha" style="mask-type:alpha"><image href="${img.href}" x="${n3(img.x)}" y="${n3(img.y)}" width="${n3(img.w)}" height="${n3(img.h)}" preserveAspectRatio="none"/></mask>`;
 
-  return { g, grad, filter, body, mask, img };
+  return { g, grad, filter: filter + vdefs, body, mask, img };
 }
 // Social frames: the logo is centred on a canvas of this aspect ratio.
 const FRAMES = {
@@ -300,7 +408,7 @@ new ResizeObserver(() => fit()).observe(canvasWrap);
 // Transport: a loop scrubber instead of an ever-growing clock.
 const scrub = $('#scrub'), timeLabel = $('#timeLabel');
 let scrubbing = false;
-const loopLen = () => BASE_LOOP / S.speed;
+const loopLen = () => cycleInfo(true).C;
 function setFill(el) {
   const min = +el.min || 0, max = +el.max || 1;
   el.style.setProperty('--p', ((el.value - min) / (max - min) * 100).toFixed(2) + '%');
@@ -316,7 +424,7 @@ function setFill(el) {
 scrub.addEventListener('input', () => {
   scrubbing = true;
   const L = loopLen();
-  const k = S.intro ? Math.ceil(S.introDur / L) : 0; // land past the intro
+  const k = S.vanish ? 0 : S.intro ? Math.ceil(S.introDur / L) : 0; // land past a one-off intro
   svg.setCurrentTime(k * L + scrub.value * L);
   setFill(scrub);
 });
@@ -579,7 +687,17 @@ const ADV = {
   text: [['letterSpacing', 'Letter spacing', -15, 30, 0.5]],
   mask: [['threshold', 'Threshold', 0.05, 0.95, 0.01]],
 };
-const SLIDERS = Object.fromEntries([...MOTION, ...Object.values(ADV).flat()].map(c => [c[0], c]));
+const VANISH = [
+  ['vanishDur', 'Vanish time', 0.4, 4, 0.05, 'Quick', 'Slow', v => (+v).toFixed(1) + 's'],
+  ['vanishHold', 'Hold before vanishing', 0, 6, 0.1, 'Short', 'Long', v => (+v).toFixed(1) + 's'],
+];
+const DIR_ICONS = {
+  ltr: '<path d="M3 10h12M11 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  rtl: '<path d="M17 10H5M9 6l-4 4 4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  center: '<circle cx="10" cy="10" r="2" fill="currentColor"/><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2.6"/>',
+  all: '<rect x="3.5" y="5" width="13" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.4 2.4"/>',
+};
+const SLIDERS = Object.fromEntries([...MOTION, ...VANISH, ...Object.values(ADV).flat()].map(c => [c[0], c]));
 
 function fmtVal(k) {
   const c = SLIDERS[k];
@@ -642,6 +760,20 @@ function buildPanel() {
       ${MOTION.map(c => sliderHTML(c, c[0] === 'speed')).join('')}
     </section>`;
 
+  const vanish = `
+    <section class="sec">
+      <div class="sec-head"><h2 class="sec-title" id="vanishTitle">Vanish</h2>
+        <label class="toggle" title="Letters vanish, then the logo plays again"><input type="checkbox" role="switch" class="switch" data-key="vanish" aria-labelledby="vanishTitle"></label></div>
+      ${S.vanish ? `
+        <div class="vanish-opts" id="vanishOpts">
+          <div class="chips" role="group" aria-label="Vanish style">${Object.entries(VANISH_STYLES).map(([k, v]) =>
+            `<button type="button" class="chip${S.vanishStyle === k ? ' on' : ''}" data-vstyle="${k}" aria-pressed="${S.vanishStyle === k}">${v.label}</button>`).join('')}</div>
+          <div class="chips" role="group" aria-label="Direction">${Object.entries(VANISH_DIRS).map(([k, label]) =>
+            `<button type="button" class="chip chip-icon${S.vanishDir === k ? ' on' : ''}" data-vdir="${k}" aria-pressed="${S.vanishDir === k}" aria-label="${label}" title="${label}"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true">${DIR_ICONS[k]}</svg></button>`).join('')}</div>
+          ${VANISH.map(c => sliderHTML(c)).join('')}
+        </div>` : `<div class="note">Letters vanish, then the logo plays again. Made for looping posts.</div>`}
+    </section>`;
+
   const bgOn = v => !S.bgTransparent && S.bg.toLowerCase() === v;
   const custom = !S.bgTransparent && !BACKGROUNDS.some(([, v]) => v === S.bg.toLowerCase());
   const background = `
@@ -687,7 +819,7 @@ function buildPanel() {
 
   Kit.colorPicker.close();
   const prevSeg = lastSeg;
-  panelEl.innerHTML = logo + colors + motion + background + fine;
+  panelEl.innerHTML = logo + colors + motion + vanish + background + fine;
   syncPanel();
   Kit.enhanceSelects(panelEl);
   // Segmented control: slide the pill from where it was.
@@ -722,7 +854,13 @@ function onChange(k) {
     processSourceSoon();
     if (k === 'maskMode') setTimeout(buildPanel, 200);
   } else schedule();
-  if (k === 'speed') { const h = $('#loopHint'); if (h) h.textContent = `${loopLen().toFixed(1)}s loop`; }
+  if (k === 'speed' || k.startsWith('vanish') || k === 'intro' || k === 'introDur') { const h = $('#loopHint'); if (h) h.textContent = `${loopLen().toFixed(1)}s loop`; }
+  if (k === 'vanish') {
+    buildPanel();
+    const o = $('#vanishOpts'); if (o) o.classList.add('reveal');
+    panelEl.querySelector('[data-key="vanish"]').focus();
+    svg.setCurrentTime(0);
+  }
 }
 
 const panelEl = $('#panel');
@@ -805,6 +943,16 @@ panelEl.addEventListener('click', e => {
   if (b.dataset.bg) { S.bg = b.dataset.bg; S.bgTransparent = false; buildPanel(); save(); schedule(); return; }
   if (b.dataset.bgt != null) { S.bgTransparent = true; buildPanel(); save(); schedule(); return; }
   if (b.id === 'shuffle') { shuffle(); return; }
+  if (b.dataset.vstyle || b.dataset.vdir) {
+    const key = b.dataset.vstyle ? 'vanishStyle' : 'vanishDir';
+    S[key] = b.dataset.vstyle || b.dataset.vdir;
+    b.parentElement.querySelectorAll('.chip').forEach(c => { const on = c === b; c.classList.toggle('on', on); c.setAttribute('aria-pressed', on); });
+    save(); schedule();
+    // jump to just before the vanish so the change is visible right away
+    const ci = cycleInfo(true);
+    requestAnimationFrame(() => svg.setCurrentTime(Math.floor(svg.getCurrentTime() / ci.C) * ci.C + Math.max(0, ci.tv0 - 0.4)));
+    return;
+  }
   if (b.dataset.stopDel != null) { S.stops.splice(+b.dataset.stopDel, 1); S.palette = 'Custom'; buildPanel(); save(); schedule(); return; }
   if (b.id === 'addStop') {
     const st = sortedStops();
@@ -919,10 +1067,11 @@ function gifSize(frame, long) {
   return ar >= 1 ? { w: even(long), h: even(long / ar) } : { w: even(long * ar), h: even(long) };
 }
 // Which slice of time an export covers. "custom" lets people grab any moment.
-const maxTime = () => (S.intro ? S.introDur : 0) + loopLen() * 3;
+const maxTime = () => S.vanish ? loopLen() * 2 : (S.intro ? S.introDur : 0) + loopLen() * 3;
 function range() {
   const L = loopLen(), ex = S.ex;
   if (ex.length === 'custom') return { t0: ex.start, dur: ex.dur, intro: S.intro };
+  if (S.vanish) return { t0: 0, dur: L, intro: true }; // one full appear → vanish cycle
   if (ex.length === 'intro' && S.intro) return { t0: 0, dur: S.introDur + L, intro: true };
   return { t0: 0, dur: L, intro: false };
 }
@@ -1017,10 +1166,10 @@ const timeSlider = (key, label, min, max, step) =>
   `<label class="ctl"><span class="ctl-top"><span>${label}</span><output data-exo="${key}">${(+S.ex[key]).toFixed(1)}s</output></span>
    <input type="range" data-exr="${key}" min="${min}" max="${max}" step="${step}" value="${S.ex[key]}"></label>`;
 function lengthOpt() {
-  const opts = [['loop', 'Loop']];
-  if (S.intro) opts.push(['intro', 'With intro']);
+  const opts = [['loop', S.vanish ? 'Full cycle' : 'Loop']];
+  if (S.intro && !S.vanish) opts.push(['intro', 'With intro']);
   opts.push(['custom', 'Custom']);
-  if (S.ex.length === 'intro' && !S.intro) S.ex.length = 'loop';
+  if (S.ex.length === 'intro' && (!S.intro || S.vanish)) S.ex.length = 'loop';
   const custom = S.ex.length === 'custom'
     ? `<div class="well">${timeSlider('start', 'Start at', 0, n3(maxTime()), 0.1)}${timeSlider('dur', 'Duration', 0.5, 15, 0.1)}</div>` : '';
   return opt('Length', chips('length', opts) + custom, `${duration().toFixed(1)}s`, 'lenHint');

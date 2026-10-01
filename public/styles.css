@@ -670,3 +670,9 @@ select.input {
 @media (max-width: 860px) {
   .live-pill #liveLabel { display: none; }
 }
+
+/* ── Vanish section ─────────────────────────────────── */
+.vanish-opts { display: grid; gap: 12px; }
+.vanish-opts.reveal { animation: swap-in 260ms var(--swift); }
+.chip-icon { width: 40px; padding: 0; justify-content: center; }
+.chip-icon .mi { width: 18px; height: 18px; }
