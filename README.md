@@ -22,8 +22,8 @@ npx serve public
 
 ## Deploy
 
-Hosted on Cloudflare Pages:
+Hosted on Cloudflare (Workers static assets) at https://iridescent.harshpal653.workers.dev:
 
 ```bash
-npx wrangler pages deploy
+npx wrangler deploy
 ```

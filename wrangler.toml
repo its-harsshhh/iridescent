@@ -1,3 +1,6 @@
 name = "iridescent"
-pages_build_output_dir = "public"
 compatibility_date = "2026-10-01"
+
+[assets]
+directory = "./public"
+not_found_handling = "single-page-application"
