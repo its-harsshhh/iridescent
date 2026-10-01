@@ -1,0 +1,14 @@
+# Durable Object that counts live visitors. No public URL: only the Pages
+# Function at /api/presence reaches it, through a service binding.
+name = "iridescent-presence"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+
+[[durable_objects.bindings]]
+name = "PRESENCE"
+class_name = "Presence"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Presence"]

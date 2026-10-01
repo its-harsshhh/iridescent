@@ -7,7 +7,8 @@ Drop in a logo (PNG, SVG, JPG, WebP) or type some text, pick a colour preset, tw
 - **MP4** in social frames (1:1, 4:5, 9:16, 16:9) up to 1440p
 - **GIF** for Slack, Notion, email
 - **Animated SVG** — a single self-contained file; SVG logos stay vector and weigh a few KB
-- **PNG** still or a transparent PNG frame sequence
+- **Lottie / dotLottie** (frame-by-frame, plays the exact effect in any Lottie player)
+- **PNG** of any moment, or a transparent PNG frame sequence
 
 No build step and no backend: everything renders in the browser with SVG filters
 (`feTurbulence` → `feDisplacementMap` → `feGaussianBlur` → `feColorMatrix` → `feComponentTransfer`).
@@ -22,8 +23,18 @@ npx serve public
 
 ## Deploy
 
-Hosted on Cloudflare (Workers static assets) at https://iridescent.harshpal653.workers.dev:
+Live at https://iridescent-logo.pages.dev — hosted on Cloudflare Pages:
 
 ```bash
-npx wrangler deploy
+npx wrangler pages deploy
+```
+
+## Live visitor count
+
+`presence/` is a tiny Worker holding a Durable Object that counts open WebSocket
+connections. The Pages Function in `functions/api/presence.js` forwards
+`/api/presence` to it. Deploy it once before the site:
+
+```bash
+cd presence && npx wrangler deploy
 ```

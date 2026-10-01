@@ -42,7 +42,7 @@ const DEFAULTS = {
   intro: true, introDur: 1.6, introSmear: 40, introMelt: 12,
   palette: 'Iridescent', stops: PRESETS.Iridescent.map(s => s.slice()),
   bg: '#ffffff', bgTransparent: false, padding: 10,
-  ex: { frame: 'square', quality: 1080, fps: 30, length: 'loop', gif: 640, transparent: true },
+  ex: { frame: 'square', quality: 1080, fps: 30, length: 'loop', start: 0, dur: 3, at: 2, gif: 640, transparent: true, lottieFormat: 'dot', lottieSize: 512, lottieFps: 24 },
 };
 
 const SOURCE_KEYS = new Set(['text','font','weight','letterSpacing','maskMode','threshold']);
@@ -324,7 +324,10 @@ scrub.addEventListener('change', () => { scrubbing = false; });
 
 function togglePlay() {
   if (svg.animationsPaused()) svg.unpauseAnimations(); else svg.pauseAnimations();
-  stage.classList.toggle('paused', svg.animationsPaused());
+  const paused = svg.animationsPaused(), b = $('#btnPlay');
+  stage.classList.toggle('paused', paused);
+  b.setAttribute('aria-label', paused ? 'Play' : 'Pause');
+  b.title = `${paused ? 'Play' : 'Pause'} (Space)`;
 }
 function replay() {
   svg.setCurrentTime(0);
@@ -338,7 +341,7 @@ function loadImg(url) {
   return new Promise((res, rej) => {
     const im = new Image();
     im.onload = () => res(im);
-    im.onerror = () => rej(new Error('Could not load image'));
+    im.onerror = () => rej(new Error('Unable to open that image in this browser. Save it as PNG or SVG and try again.'));
     im.src = url;
   });
 }
@@ -347,7 +350,7 @@ function b64(str) { return btoa(unescape(encodeURIComponent(str))); }
 function normalizeSvg(text) {
   const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
   const root = doc.documentElement;
-  if (!root || root.nodeName.toLowerCase() !== 'svg') throw new Error('Not a valid SVG file');
+  if (!root || root.nodeName.toLowerCase() !== 'svg') throw new Error('Unable to read that SVG. Export it again from your design tool and retry.');
   const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
   const bad = v => !v || /%/.test(v);
   if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
@@ -363,29 +366,83 @@ function normalizeSvg(text) {
   return new XMLSerializer().serializeToString(root);
 }
 
-async function loadFile(file) {
-  if (!file || !/^image\//.test(file.type) && !/\.svg$/i.test(file.name)) { toast('Please choose an image file'); return; }
+// Any image the browser can decode: SVG (and gzipped SVGZ), PNG, JPG/JPEG, WebP, AVIF, GIF, BMP, ICO, TIFF/HEIC where supported.
+const IMAGE_EXT = /\.(svgz?|png|jpe?g|jfif|webp|avif|gif|bmp|ico|tiff?|heic|heif)$/i;
+const MAX_BYTES = 25 * 1024 * 1024;
+let loadToken = 0, loadingName = null, fileInfo = null;
+const fmtBytes = b => b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1024 / 1024).toFixed(1)} MB`;
+const fileKind = f => ((f.name.match(/\.([a-z0-9]+)$/i) || [])[1] || f.type.split('/')[1] || 'image').toUpperCase().replace('JPEG', 'JPG').replace('SVG+XML', 'SVG');
+
+// Everything needed to put the previous logo back (failed upload, Undo).
+function snapshot() {
+  return { upload, fileInfo, src: { ...src }, maskMode: S.maskMode, threshold: S.threshold, sourceType: S.sourceType };
+}
+function restore(snap) {
+  upload = snap.upload; fileInfo = snap.fileInfo; Object.assign(src, snap.src);
+  S.maskMode = snap.maskMode; S.threshold = snap.threshold; S.sourceType = snap.sourceType;
+  save(); renderPreview(); buildPanel();
+}
+function setLoading(name) { loadingName = name; buildPanel(); }
+
+async function loadFile(file, { skipped = 0 } = {}) {
+  if (!file) return;
+  if (busy) { toast('Finish or cancel the export first, then add a new logo.', true); return; }
+  if (!/^image\//.test(file.type) && !IMAGE_EXT.test(file.name)) { toast(`“${file.name}” isn’t an image. Choose an SVG, PNG, JPG, WebP or other image.`, true); return; }
+  if (file.size > MAX_BYTES) { toast(`“${file.name}” is ${fmtBytes(file.size)}. Choose an image under 25 MB.`, true); return; }
+
+  const token = ++loadToken;          // the newest file always wins
+  const prev = snapshot();
+  setLoading(file.name);
   try {
-    const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
+    const isSvgz = /\.svgz$/i.test(file.name);
+    const isSvg = isSvgz || file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
     let url, svgUrl = null;
     if (isSvg) {
-      url = svgUrl = 'data:image/svg+xml;base64,' + b64(normalizeSvg(await file.text()));
+      const text = isSvgz
+        ? await new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text()
+        : await file.text();
+      url = svgUrl = 'data:image/svg+xml;base64,' + b64(normalizeSvg(text));
     } else {
       url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
     }
     const img = await loadImg(url);
+    if (token !== loadToken) return;
+
     upload = { img, svgUrl };
+    fileInfo = { name: file.name, kind: fileKind(file), size: file.size, w: img.naturalWidth, h: img.naturalHeight, thumb: url };
     src.name = file.name;
     S.sourceType = 'upload';
     S.maskMode = 'auto';
-    await processSource();
-    buildPanel();
-    replay();
-    toast(`Loaded ${file.name}`);
+    const ok = await processSource({ quiet: true });
+    if (token !== loadToken) return;
+    if (!ok) {
+      loadingName = null; restore(prev);
+      toast(`Unable to find a logo in “${file.name}”. It may be blank or a full photo. ${prev.upload ? 'Your previous logo is still here.' : ''}`, true);
+      return;
+    }
+    loadingName = null;
+    buildPanel(); replay();
+    const extra = skipped ? ` ${skipped} other file${skipped > 1 ? 's were' : ' was'} skipped, one logo at a time.` : '';
+    if (prev.upload && prev.fileInfo) {
+      toast(`Replaced ${prev.fileInfo.name} with ${file.name}.${extra}`, false, { label: 'Undo', run: () => { restore(prev); replay(); toast(`Restored ${prev.fileInfo.name}`); } });
+    } else {
+      toast(`Added ${file.name}.${extra}`);
+    }
   } catch (err) {
     console.error(err);
-    toast(err.message || 'Could not read that file');
+    if (token !== loadToken) return;
+    loadingName = null; restore(prev);
+    toast(`${err.message || 'Unable to read that file. Try an SVG, PNG, JPG or WebP.'}${prev.upload ? ' Your previous logo is still here.' : ''}`, true);
   }
+}
+
+function removeUpload() {
+  if (!upload) return;
+  const prev = snapshot();
+  upload = null; fileInfo = null; src.vector = null; src.name = '';
+  S.sourceType = 'text';
+  save(); buildPanel(); processSource();
+  toast(`Removed ${prev.fileInfo ? prev.fileInfo.name : 'your logo'}`, false, { label: 'Undo', run: () => { restore(prev); replay(); } });
 }
 
 async function drawSourceCanvas() {
@@ -427,7 +484,7 @@ function detectMode(d, w, h) {
   return lum / n > 0.5 ? 'dark' : 'light';
 }
 
-async function processSource() {
+async function processSource({ quiet = false } = {}) {
   const { c, ctx, mode: forced, vectorUrl } = await drawSourceCanvas();
   const w = c.width, h = c.height;
   const id = ctx.getImageData(0, 0, w, h), d = id.data;
@@ -451,7 +508,10 @@ async function processSource() {
       if (v > 0.03) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
     }
   }
-  if (maxX < 0) { toast('Nothing visible in that image — try another mask mode'); return; }
+  if (maxX < 0) {
+    if (!quiet) toast('Unable to find a logo with this mask. Open Fine-tune and choose another Logo mask option.', true);
+    return false;
+  }
   // Average stroke thickness ≈ 2 · area / perimeter. Used to keep the look
   // consistent between chunky lettering and thin wordmarks.
   let area = 0, edge = 0;
@@ -479,6 +539,7 @@ async function processSource() {
   renderPreview();
   const lbl = $('#detectedLabel');
   if (lbl) lbl.textContent = modeLabel(mode);
+  return true;
 }
 
 const MODE_LABELS = { alpha: 'Transparency', dark: 'Dark logo on light bg', light: 'Light logo on dark bg' };
@@ -533,37 +594,51 @@ const sliderHTML = (c, showVal = true) => {
     ${l ? `<span class="ctl-ends"><span>${l}</span><span>${r}</span></span>` : ''}
   </label>`;
 };
-const toggleHTML = (key, label) => `<label class="toggle"><input type="checkbox" data-key="${key}"> ${label}</label>`;
+const toggleHTML = (key, label) => `<label class="toggle"><input type="checkbox" role="switch" class="switch" data-key="${key}"><span>${label}</span></label>`;
 const palSwatch = stops => `radial-gradient(circle at 50% 50%, ${stops.map(([p, c]) => `${c} ${(12 + p * 60).toFixed(0)}%`).join(', ')}, #fff 92%)`;
-const ICON_SHUFFLE = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 4.5h2.2c1.3 0 2.1.6 2.8 1.6l2 3c.7 1 1.5 1.6 2.8 1.6H14M2 11.5h2.2c1.3 0 2.1-.6 2.8-1.6M9 6.1c.7-1 1.5-1.6 2.8-1.6H14M12 2.5l2 2-2 2M12 9.5l2 2-2 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_COPY = `<svg class="mi i-a" viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13 4.5A1.5 1.5 0 0 0 11.5 3h-6A2.5 2.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+const ICON_CHECK = `<svg class="mi i-b" viewBox="0 0 20 20" aria-hidden="true"><path d="m4.5 10.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_SHUFFLE = `<svg class="mi" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h2.2c1.3 0 2.1.6 2.8 1.6l2 3c.7 1 1.5 1.6 2.8 1.6H14M2 11.5h2.2c1.3 0 2.1-.6 2.8-1.6M9 6.1c.7-1 1.5-1.6 2.8-1.6H14M12 2.5l2 2-2 2M12 9.5l2 2-2 2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function buildPanel() {
   const up = S.sourceType === 'upload';
   const logo = `
     <section class="sec">
-      <div class="sec-head"><span class="sec-title">Logo</span></div>
-      <div class="seg"><button type="button" data-src="upload" class="${up ? 'on' : ''}">Upload</button><button type="button" data-src="text" class="${up ? '' : 'on'}">Type text</button></div>
+      <div class="sec-head"><h2 class="sec-title">Logo</h2></div>
+      <div class="seg" role="group" aria-label="Logo source"><span class="seg-ind" aria-hidden="true"></span><button type="button" data-src="upload" class="${up ? 'on' : ''}" aria-pressed="${up}">Upload</button><button type="button" data-src="text" class="${up ? '' : 'on'}" aria-pressed="${!up}">Type text</button></div>
       ${up ? `
-        <div class="dropzone" id="dropzone" role="button" tabindex="0">
-          ${upload ? `<b>${esc(src.name)}</b><span>Click or drop to replace</span>` : `<b>Choose your logo</b><span>or drop / paste it anywhere</span>`}
+        ${loadingName ? `
+        <div class="dropzone is-loading" aria-live="polite"><span class="spinner" aria-hidden="true"></span><b>Reading ${esc(loadingName)}…</b></div>
+        ` : upload && fileInfo ? `
+        <div class="file-card">
+          <span class="file-thumb checker"><img src="${fileInfo.thumb}" alt=""></span>
+          <span class="file-meta" title="${esc(fileInfo.name)} · ${fileInfo.w}×${fileInfo.h}px · ${fmtBytes(fileInfo.size)}"><b>${esc(fileInfo.name)}</b><span>${fileInfo.kind} · ${fmtBytes(fileInfo.size)}</span></span>
+          <button type="button" class="btn btn-sm" id="replaceFile">Replace</button>
+          <button type="button" class="icon-btn icon-btn-xs" id="removeFile" aria-label="Remove ${esc(fileInfo.name)}" title="Remove">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
         </div>
-        <div class="note">Transparent PNG or SVG gives the cleanest result.</div>
+        <div class="note">Drop or paste another image anywhere to replace it. You can undo.</div>
+        ` : `
+        <div class="dropzone" id="dropzone" role="button" tabindex="0"><b>Choose a logo</b><span>Or drop or paste it anywhere</span></div>
+        <div class="note">Any image works: SVG, PNG, JPG, WebP, AVIF, GIF and more. A transparent SVG or PNG gives the cleanest edges.</div>
+        `}
       ` : `
-        <input class="input" data-key="text" value="${esc(S.text)}" maxlength="40" aria-label="Text" placeholder="Type something">
-        <select class="input" data-key="font" aria-label="Font">${FONTS.map(f => `<option${f === S.font ? ' selected' : ''}>${f}</option>`).join('')}</select>
+        <label class="field"><span class="field-label">Text</span><input class="input" data-key="text" value="${esc(S.text)}" maxlength="40" placeholder="Acme" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span class="field-label">Font</span><select class="input" data-key="font" data-font-preview>${FONTS.map(f => `<option${f === S.font ? ' selected' : ''}>${f}</option>`).join('')}</select></label>
       `}
     </section>`;
 
   const colors = `
     <section class="sec">
-      <div class="sec-head"><span class="sec-title">Colors</span><button type="button" class="btn btn-sm" id="shuffle" title="Random look">${ICON_SHUFFLE} Shuffle</button></div>
+      <div class="sec-head"><h2 class="sec-title">Colors</h2><button type="button" class="btn btn-sm" id="shuffle" title="Pick a random look">${ICON_SHUFFLE}Shuffle</button></div>
       <div class="palettes">${Object.entries(PRESETS).map(([name, stops]) =>
-        `<button type="button" class="pal${S.palette === name ? ' on' : ''}" data-pal="${name}" title="${name}"><i style="background:${palSwatch(stops)}"></i>${name}</button>`).join('')}</div>
+        `<button type="button" class="pal${S.palette === name ? ' on' : ''}" data-pal="${name}" aria-pressed="${S.palette === name}"><i aria-hidden="true" style="background:${palSwatch(stops)}"></i>${name}</button>`).join('')}</div>
     </section>`;
 
   const motion = `
     <section class="sec">
-      <div class="sec-head"><span class="sec-title">Motion</span><span class="sec-hint" id="loopHint"></span></div>
+      <div class="sec-head"><h2 class="sec-title">Motion</h2><span class="sec-hint" id="loopHint"></span></div>
       ${MOTION.map(c => sliderHTML(c, c[0] === 'speed')).join('')}
     </section>`;
 
@@ -571,17 +646,17 @@ function buildPanel() {
   const custom = !S.bgTransparent && !BACKGROUNDS.some(([, v]) => v === S.bg.toLowerCase());
   const background = `
     <section class="sec">
-      <div class="sec-head"><span class="sec-title">Background</span></div>
+      <div class="sec-head"><h2 class="sec-title">Background</h2></div>
       <div class="swatches">
-        ${BACKGROUNDS.map(([n, v]) => `<button type="button" class="sw${bgOn(v) ? ' on' : ''}" data-bg="${v}" title="${n}" style="background:${v}"></button>`).join('')}
-        <button type="button" class="sw checker${S.bgTransparent ? ' on' : ''}" data-bgt title="Transparent"></button>
-        <label class="sw sw-custom${custom ? ' on' : ''}" title="Custom colour"><input type="color" data-key="bg" value="${S.bg}"></label>
+        ${BACKGROUNDS.map(([n, v]) => `<button type="button" class="sw${bgOn(v) ? ' on' : ''}" data-bg="${v}" title="${n}" aria-label="${n}" aria-pressed="${bgOn(v)}" style="background:${v}"></button>`).join('')}
+        <button type="button" class="sw checker${S.bgTransparent ? ' on' : ''}" data-bgt title="Transparent" aria-label="Transparent" aria-pressed="${S.bgTransparent}"></button>
+        <button type="button" class="sw sw-custom${custom ? ' on' : ''}" data-colorpick="bg" title="Custom colour" aria-label="Custom background colour" aria-haspopup="dialog" aria-expanded="false" aria-pressed="${custom}"></button>
       </div>
     </section>`;
 
   const stops = S.stops.map((s, i) => `
     <div class="stop">
-      <input type="color" value="${s[1]}" data-stop-color="${i}" aria-label="Stop colour">
+      <button type="button" class="stop-color" data-colorpick="stop" data-i="${i}" style="background:${s[1]}" aria-label="Stop colour ${s[1]}" aria-haspopup="dialog" aria-expanded="false"></button>
       <input type="range" min="0" max="1" step="0.005" value="${s[0]}" data-stop-pos="${i}" aria-label="Stop position">
       <output>${Math.round(s[0] * 100)}%</output>
       <button type="button" class="x" data-stop-del="${i}" title="Remove"${S.stops.length <= 2 ? ' disabled' : ''}>×</button>
@@ -590,18 +665,18 @@ function buildPanel() {
   const group = (label, inner) => `<div class="adv-group"><div class="adv-label">${label}</div>${inner}</div>`;
   const fine = `
     <details class="adv" id="adv"${advOpen ? ' open' : ''}>
-      <summary>Fine-tune</summary>
+      <summary>Fine-tune<span class="summary-hint">Gradient, intro, material and more</span></summary>
       <div class="adv-body">
         ${group('Gradient', `<div class="grad-bar" id="gradBar" style="background:${cssGradient(S.stops)}"></div>
-          <div class="note">Left = core of the shape · right = outer halo</div>
+          <div class="note">Left is the core of the shape, right is the outer halo.</div>
           <div class="stops">${stops}</div>
           <div class="btn-row"><button type="button" class="btn btn-sm" id="addStop">Add stop</button><button type="button" class="btn btn-sm" id="revStops">Reverse</button></div>`)}
-        ${group('Intro', toggleHTML('intro', 'Melt in when it starts') + ADV.intro.map(c => sliderHTML(c)).join('') + `<div class="btn-row"><button type="button" class="btn btn-sm" id="replay2">Replay intro</button></div>`)}
+        ${group('Intro', toggleHTML('intro', 'Melt in on start') + ADV.intro.map(c => sliderHTML(c)).join('') + `<div class="btn-row"><button type="button" class="btn btn-sm" id="replay2">Replay intro</button></div>`)}
         ${group('Material', ADV.shape.map(c => sliderHTML(c)).join(''))}
         ${group('Shimmer', ADV.shimmer.map(c => sliderHTML(c)).join('') + toggleHTML('stripeReverse', 'Reverse direction'))}
-        ${group('Fluid', ADV.fluid.map(c => sliderHTML(c)).join('') + `<div class="btn-row"><button type="button" class="btn btn-sm" id="newSeed">New flow pattern</button></div>`)}
+        ${group('Fluid', ADV.fluid.map(c => sliderHTML(c)).join('') + `<div class="btn-row"><button type="button" class="btn btn-sm" id="newSeed">Randomize flow</button></div>`)}
         ${up ? group('Logo mask', `<select class="input" data-key="maskMode" aria-label="Mask from">
-            <option value="auto">Auto-detect</option><option value="alpha">Transparency</option>
+            <option value="auto">Detect automatically</option><option value="alpha">Transparency</option>
             <option value="dark">Dark logo on light background</option><option value="light">Light logo on dark background</option></select>
             <div class="note">Detected: <span id="detectedLabel">${modeLabel(src.detected)}</span></div>
             ${src.detected !== 'alpha' ? ADV.mask.map(c => sliderHTML(c)).join('') : ''}`)
@@ -610,10 +685,22 @@ function buildPanel() {
       </div>
     </details>`;
 
+  Kit.colorPicker.close();
+  const prevSeg = lastSeg;
   panelEl.innerHTML = logo + colors + motion + background + fine;
   syncPanel();
+  Kit.enhanceSelects(panelEl);
+  // Segmented control: slide the pill from where it was.
+  const seg = panelEl.querySelector('.seg');
+  if (seg) {
+    const now = up ? 0 : 1;
+    seg.style.setProperty('--i', prevSeg ?? now);
+    if (prevSeg != null && prevSeg !== now) requestAnimationFrame(() => requestAnimationFrame(() => seg.style.setProperty('--i', now)));
+    else seg.style.setProperty('--i', now);
+    lastSeg = now;
+  }
 }
-let advOpen = false;
+let advOpen = false, lastSeg = null;
 
 function syncPanel() {
   panelEl.querySelectorAll('[data-key]').forEach(el => {
@@ -648,17 +735,11 @@ panelEl.addEventListener('input', e => {
     if (el.type === 'checkbox') S[k] = el.checked;
     else if (el.type === 'range' || k === 'weight') S[k] = +el.value;
     else S[k] = el.value;
-    if (k === 'bg') {
-      S.bgTransparent = false;
-      panelEl.querySelectorAll('.sw').forEach(b => b.classList.remove('on'));
-      el.parentElement.classList.add('on');
-    }
     const out = panelEl.querySelector(`[data-out="${k}"]`);
     if (out) out.textContent = fmtVal(k);
     onChange(k);
     return;
   }
-  if (el.dataset.stopColor != null) { S.stops[+el.dataset.stopColor][1] = el.value; stopsChanged(); }
   if (el.dataset.stopPos != null) {
     S.stops[+el.dataset.stopPos][0] = +el.value;
     el.nextElementSibling.textContent = Math.round(el.value * 100) + '%';
@@ -668,7 +749,7 @@ panelEl.addEventListener('input', e => {
 
 function stopsChanged() {
   S.palette = 'Custom';
-  panelEl.querySelectorAll('.pal').forEach(b => b.classList.remove('on'));
+  panelEl.querySelectorAll('.pal').forEach(b => { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
   $('#gradBar').style.background = cssGradient(S.stops);
   save(); schedule();
 }
@@ -687,8 +768,24 @@ function shuffle() {
 }
 
 panelEl.addEventListener('click', e => {
-  const b = e.target.closest('button, .dropzone');
+  const b = e.target.closest('button, #dropzone');
   if (!b) return;
+  if (b.dataset.colorpick) {
+    if (b.dataset.colorpick === 'bg') {
+      Kit.colorPicker.open(b, S.bg, c => {
+        S.bg = c; S.bgTransparent = false;
+        panelEl.querySelectorAll('.sw').forEach(x => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
+        save(); schedule();
+      });
+    } else {
+      const i = +b.dataset.i;
+      Kit.colorPicker.open(b, S.stops[i][1], c => {
+        S.stops[i][1] = c; b.style.background = c; b.setAttribute('aria-label', `Stop colour ${c}`);
+        stopsChanged();
+      });
+    }
+    return;
+  }
   if (b.dataset.src) {
     S.sourceType = b.dataset.src;
     buildPanel();
@@ -696,11 +793,12 @@ panelEl.addEventListener('click', e => {
     else $('#file').click();
     return;
   }
-  if (b.id === 'dropzone') { $('#file').click(); return; }
+  if (b.id === 'dropzone' || b.id === 'replaceFile') { $('#file').click(); return; }
+  if (b.id === 'removeFile') { removeUpload(); return; }
   if (b.dataset.pal) {
     S.palette = b.dataset.pal;
     S.stops = PRESETS[S.palette].map(s => s.slice());
-    panelEl.querySelectorAll('.pal').forEach(p => p.classList.toggle('on', p === b));
+    panelEl.querySelectorAll('.pal').forEach(p => { p.classList.toggle('on', p === b); p.setAttribute('aria-pressed', p === b); });
     if (advOpen) buildPanel();
     save(); schedule(); return;
   }
@@ -737,31 +835,62 @@ panelEl.addEventListener('keydown', e => {
 // ---------------------------------------------------------------------------
 $('#btnUpload').onclick = () => $('#file').click();
 $('#file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) loadFile(f); };
+// Note: cancelling the file picker leaves the current logo untouched.
 let dragDepth = 0;
 window.addEventListener('dragenter', e => { if ([...e.dataTransfer.types].includes('Files')) { dragDepth++; document.body.classList.add('dragging'); } });
 window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => {
   e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
-  const f = e.dataTransfer.files[0]; if (f) loadFile(f);
+  const files = [...e.dataTransfer.files];
+  if (files.length) { loadFile(files[0], { skipped: files.length - 1 }); return; }
+  if ([...e.dataTransfer.types].some(t => t === 'text/uri-list' || t === 'text/html')) {
+    toast('Save that image to your computer first, then drop the file here.', true);
+  }
 });
 window.addEventListener('paste', e => {
-  const f = [...(e.clipboardData?.files || [])][0];
-  if (f) loadFile(f);
+  if (/INPUT|TEXTAREA/.test(document.activeElement.tagName) && !e.clipboardData?.files?.length) return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); loadFile(files[0], { skipped: files.length - 1 }); }
 });
 window.addEventListener('keydown', e => {
   if (e.code === 'Space' && !dlg.open && !/INPUT|SELECT|TEXTAREA|BUTTON/.test(document.activeElement.tagName)) { e.preventDefault(); togglePlay(); }
 });
 $('#btnPlay').onclick = togglePlay;
+const btnSound = $('#btnSound');
+function syncSound() {
+  const on = Kit.sound.enabled;
+  btnSound.setAttribute('aria-pressed', on);
+  btnSound.title = on ? 'Sound on' : 'Sound off';
+  btnSound.toggleAttribute('data-copied', !on); // reuses the icon-swap state
+}
+btnSound.onclick = () => { Kit.sound.enabled = !Kit.sound.enabled; syncSound(); if (Kit.sound.enabled) Kit.sound.toggle(true); };
+syncSound();
 $('#btnReplay').onclick = replay;
 
 // ---------------------------------------------------------------------------
 // Export: dropdown → dialog
 // ---------------------------------------------------------------------------
-function toast(msg) {
+function toast(msg, error = false, action = null) {
   const t = $('#toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2600);
+  clearTimeout(t._t);
+  t.classList.toggle('error', error);
+  t.innerHTML = '';
+  t.append(Object.assign(document.createElement('span'), { textContent: msg }));
+  if (action) {
+    const a = Object.assign(document.createElement('button'), { type: 'button', className: 'toast-x', textContent: action.label });
+    a.onclick = () => { t.classList.remove('show'); action.run(); };
+    t.append(a);
+    t._t = setTimeout(() => t.classList.remove('show'), 6000);
+  } else if (error) {
+    const b = Object.assign(document.createElement('button'), { type: 'button', className: 'toast-x', textContent: 'Dismiss' });
+    b.onclick = () => t.classList.remove('show');
+    t.append(b);
+  } else {
+    t._t = setTimeout(() => t.classList.remove('show'), 2600);
+  }
+  t.classList.add('show');
+  if (error) Kit.sound.error(); else if (/^(Copied|Downloaded)/.test(msg)) Kit.sound.success();
 }
 function download(blob, name) {
   const a = document.createElement('a');
@@ -789,23 +918,35 @@ function gifSize(frame, long) {
   const b = frameBox(frame), ar = b.w / b.h;
   return ar >= 1 ? { w: even(long), h: even(long / ar) } : { w: even(long * ar), h: even(long) };
 }
-function duration() {
-  const L = loopLen();
-  return S.ex.length === 'intro' && S.intro ? S.introDur + L : L;
+// Which slice of time an export covers. "custom" lets people grab any moment.
+const maxTime = () => (S.intro ? S.introDur : 0) + loopLen() * 3;
+function range() {
+  const L = loopLen(), ex = S.ex;
+  if (ex.length === 'custom') return { t0: ex.start, dur: ex.dur, intro: S.intro };
+  if (ex.length === 'intro' && S.intro) return { t0: 0, dur: S.introDur + L, intro: true };
+  return { t0: 0, dur: L, intro: false };
+}
+const duration = () => range().dur;
+
+let copyT = 0;
+async function copySVG() {
+  try {
+    const code = codeSVG();
+    await navigator.clipboard.writeText(code);
+    toast(`Copied SVG code (${kb(new Blob([code]).size)})`);
+    // Copy → check icon swap, on the header button and the dialog button.
+    document.querySelectorAll('[data-copied]').forEach(b => b.removeAttribute('data-copied'));
+    document.querySelectorAll('#btnCopy, [data-do="copy"]').forEach(b => b.setAttribute('data-copied', ''));
+    clearTimeout(copyT);
+    copyT = setTimeout(() => document.querySelectorAll('[data-copied]').forEach(b => b.removeAttribute('data-copied')), 1600);
+  } catch (e) { toast('Unable to copy. Your browser blocked clipboard access, so use Download .svg instead.', true); }
 }
 
-const menu = $('#exportMenu'), btnExport = $('#btnExport');
-function setMenu(open) {
-  menu.hidden = !open;
-  btnExport.setAttribute('aria-expanded', open);
-  if (open) menu.querySelector('button').focus();
-}
-btnExport.onclick = e => { e.stopPropagation(); setMenu(menu.hidden); };
-document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target)) setMenu(false); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { setMenu(false); btnExport.focus(); } });
-menu.addEventListener('click', e => {
-  const b = e.target.closest('[data-open]');
-  if (b) { setMenu(false); openExport(b.dataset.open); }
+const btnExport = $('#btnExport'), btnCopy = $('#btnCopy');
+btnExport.onclick = () => openExport(exTab);
+btnCopy.onclick = () => copySVG();
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); copySVG(); }
 });
 
 const dlg = $('#exportDlg'), dlgOpts = $('#dlgOpts'), dlgFoot = $('#dlgFoot'), dlgImg = $('#dlgImg');
@@ -813,14 +954,49 @@ let exTab = 'video', busy = false, cancelled = false, previewUrl = null;
 
 function openExport(tab) {
   exTab = tab;
-  renderExport();
+  if (tab === 'image') S.ex.at = +(svg.getCurrentTime() % maxTime()).toFixed(2);
+  dlg.classList.remove('closing');
+  renderExport({ first: true });
   dlg.showModal();
+  Kit.sound.open();
+  requestAnimationFrame(() => moveTabIndicator(false));
 }
+// Exit: short and soft (opacity + small drop), then actually close.
+function closeExport() {
+  if (!dlg.open || dlg.classList.contains('closing')) return;
+  if (busy) cancelled = true;
+  Kit.sound.close();
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) { dlg.close(); return; }
+  dlg.classList.add('closing');
+  setTimeout(() => { dlg.classList.remove('closing'); dlg.close(); }, 160);
+}
+dlg.addEventListener('cancel', e => { e.preventDefault(); closeExport(); });
+dlg.querySelector('.x-btn').addEventListener('click', e => { e.preventDefault(); closeExport(); });
 dlg.addEventListener('close', () => {
   cancelled = true;
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; dlgImg.removeAttribute('src'); }
 });
-dlg.addEventListener('click', e => { if (e.target === dlg && !busy) dlg.close(); });
+dlg.addEventListener('click', e => { if (e.target === dlg && !busy) closeExport(); });
+
+// Sliding pill behind the active tab.
+function moveTabIndicator(animate = true) {
+  const ind = $('#exportTabs .tab-ind'), t = $(`#exportTabs [data-tab="${exTab}"]`);
+  if (!ind || !t) return;
+  if (!animate) ind.style.transition = 'none';
+  ind.style.width = t.offsetWidth + 'px';
+  ind.style.translate = `${t.offsetLeft - 3}px 0`;
+  if (!animate) { ind.offsetWidth; ind.style.transition = ''; }
+}
+$('#exportTabs').addEventListener('keydown', e => {
+  const tabs = [...$('#exportTabs').querySelectorAll('[data-tab]')];
+  const i = tabs.findIndex(t => t.dataset.tab === exTab);
+  const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+  if (next == null || busy) return;
+  e.preventDefault();
+  const t = tabs[(next + tabs.length) % tabs.length];
+  exTab = t.dataset.tab; renderExport(); t.focus(); Kit.sound.press();
+});
 $('#exportTabs').addEventListener('click', e => {
   const b = e.target.closest('[data-tab]');
   if (b && !busy) { exTab = b.dataset.tab; renderExport(); }
@@ -832,57 +1008,104 @@ const frameIcon = ar => {
 };
 function chips(key, opts) {
   return `<div class="chips">${opts.map(([v, label]) =>
-    `<button type="button" class="chip${String(S.ex[key]) === String(v) ? ' on' : ''}" data-ex="${key}" data-v="${v}">${label}</button>`).join('')}</div>`;
+    `<button type="button" class="chip${String(S.ex[key]) === String(v) ? ' on' : ''}" data-ex="${key}" data-v="${v}" aria-pressed="${String(S.ex[key]) === String(v)}">${label}</button>`).join('')}</div>`;
 }
-const opt = (label, inner, hint = '') => `<div class="opt"><div class="opt-label">${label}${hint ? `<small>${hint}</small>` : ''}</div>${inner}</div>`;
+const opt = (label, inner, hint = '', id = '') => `<div class="opt"><div class="opt-label">${label}${hint || id ? `<small${id ? ` id="${id}"` : ''}>${hint}</small>` : ''}</div>${inner}</div>`;
 const frameChips = () => chips('frame', Object.entries(FRAMES).map(([k, f]) =>
   [k, `${frameIcon(f.ar || geom().W / geom().H)}${f.label}`]));
-const lengthChips = () => S.intro
-  ? opt('Length', chips('length', [['loop', `Seamless loop`], ['intro', `With intro`]]), `${duration().toFixed(1)}s`)
-  : '';
+const timeSlider = (key, label, min, max, step) =>
+  `<label class="ctl"><span class="ctl-top"><span>${label}</span><output data-exo="${key}">${(+S.ex[key]).toFixed(1)}s</output></span>
+   <input type="range" data-exr="${key}" min="${min}" max="${max}" step="${step}" value="${S.ex[key]}"></label>`;
+function lengthOpt() {
+  const opts = [['loop', 'Loop']];
+  if (S.intro) opts.push(['intro', 'With intro']);
+  opts.push(['custom', 'Custom']);
+  if (S.ex.length === 'intro' && !S.intro) S.ex.length = 'loop';
+  const custom = S.ex.length === 'custom'
+    ? `<div class="well">${timeSlider('start', 'Start at', 0, n3(maxTime()), 0.1)}${timeSlider('dur', 'Duration', 0.5, 15, 0.1)}</div>` : '';
+  return opt('Length', chips('length', opts) + custom, `${duration().toFixed(1)}s`, 'lenHint');
+}
 const solidBg = () => S.bgTransparent ? '#ffffff' : S.bg;
+const bgChips = () => opt('Background', chips('transparent', [[true, 'Transparent'], [false, 'Solid']]));
 
-function renderExport() {
-  $('#exportTabs').querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === exTab));
+function footMeta() {
   const ex = S.ex;
-  let html = '', meta = '', btns = '';
+  if (exTab === 'video') { const { w, h } = outSize(ex.frame, ex.quality); return `MP4 · ${w}×${h} · ${duration().toFixed(1)}s`; }
+  if (exTab === 'gif') { const { w, h } = gifSize(ex.frame, ex.gif); return `GIF · ${w}×${h} · ${duration().toFixed(1)}s`; }
+  if (exTab === 'lottie') {
+    const { w, h } = gifSize(ex.frame, ex.lottieSize);
+    return `${ex.lottieFormat === 'dot' ? '.lottie' : 'Lottie JSON'} · ${w}×${h} · ${Math.round(duration() * ex.lottieFps)} frames`;
+  }
+  if (exTab === 'code') return `SVG · ${kb(new Blob([codeSVG()]).size)}`;
+  const { w, h } = outSize(ex.frame, ex.quality);
+  return `PNG · ${w}×${h} · at ${(+ex.at).toFixed(2)}s`;
+}
+
+const LOTIQLAB_URL = 'https://lotiqlab.com/?utm_source=iridescent&utm_medium=export_dialog&utm_campaign=lottie_tab';
+const LOTIQLAB_BADGE = `
+  <a class="promo" href="${LOTIQLAB_URL}" target="_blank" rel="noopener">
+    <span class="promo-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 15.5c3.5 0 4-11 7.5-11 1.6 0 2.5 1.3 3 2.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M7 10.25h6.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg></span>
+    <span class="promo-text"><span class="promo-kicker">Powered by Lotiqlab</span><b>Edit this Lottie in Lotiqlab</b><span>Free Lottie editor: recolour, trim and convert in your browser</span></span>
+    <svg class="promo-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 10.5l5-5M6 5.5h4.5V10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span class="sr-only">(opens in a new tab)</span>
+  </a>`;
+let renderedTab = null;
+function renderExport(opts = {}) {
+  const tabChanged = renderedTab !== exTab;
+  renderedTab = exTab;
+  $('#exportTabs').querySelectorAll('[data-tab]').forEach(b => {
+    const on = b.dataset.tab === exTab;
+    b.setAttribute('aria-selected', on);
+    b.tabIndex = on ? 0 : -1;
+  });
+  const ex = S.ex;
+  let html = '', btns = '';
   if (exTab === 'video') {
-    const { w, h } = outSize(ex.frame, ex.quality);
     html = opt('Frame', frameChips()) +
       opt('Quality', chips('quality', [[720, '720p'], [1080, '1080p'], [1440, '1440p']])) +
       opt('Frame rate', chips('fps', [[30, '30 fps'], [60, '60 fps']])) +
-      lengthChips() +
-      (S.bgTransparent ? `<div class="note">Video can't be transparent, so it uses a white background. Pick a background colour in the panel to change it.</div>` : '');
-    meta = `MP4 · ${w}×${h} · ${duration().toFixed(1)}s`;
+      lengthOpt() +
+      (S.bgTransparent ? `<div class="note">Video can’t be transparent, so this uses a white background. Pick a background colour in the panel to change it.</div>` : '');
     btns = `<button type="button" class="btn btn-dark" data-do="mp4">Download MP4</button>`;
   } else if (exTab === 'gif') {
-    const { w, h } = gifSize(ex.frame, ex.gif);
     html = opt('Frame', frameChips()) +
       opt('Size', chips('gif', [[480, 'Small'], [640, 'Medium'], [800, 'Large']])) +
-      lengthChips() +
-      `<div class="note">GIFs are big and limited to 256 colours. For social posts, MP4 looks better and is about 10× smaller.</div>`;
-    meta = `GIF · ${w}×${h} · 25 fps`;
+      lengthOpt() +
+      `<div class="note">GIFs are limited to 256 colours and get large. For social posts, MP4 looks better at about a tenth of the size.</div>`;
     btns = `<button type="button" class="btn btn-dark" data-do="gif">Download GIF</button>`;
+  } else if (exTab === 'lottie') {
+    html = opt('Format', chips('lottieFormat', [['dot', 'dotLottie (.lottie)'], ['json', 'Lottie JSON']])) +
+      opt('Frame', frameChips()) +
+      opt('Size', chips('lottieSize', [[360, 'Small'], [512, 'Medium'], [720, 'Large']])) +
+      opt('Frame rate', chips('lottieFps', [[24, '24 fps'], [30, '30 fps']])) +
+      lengthOpt() + bgChips() +
+      `<div class="note">Plays the exact effect in any Lottie player, including web, iOS, Android, Webflow and Framer. Lottie can’t describe this effect as vector shapes, so each frame is stored as an image. Keep it short and small. dotLottie is compressed and usually much lighter.</div>`;
+    html = LOTIQLAB_BADGE + html;
+    btns = `<button type="button" class="btn btn-dark" data-do="lottie">Download ${ex.lottieFormat === 'dot' ? '.lottie' : 'JSON'}</button>`;
   } else if (exTab === 'code') {
     const code = codeSVG();
     const shown = code.replace(/(data:image\/[a-z+]+;base64,)[A-Za-z0-9+/=]+/g, (m, p) => `${p}…`);
-    html = opt('Background', chips('transparent', [[true, 'Transparent'], [false, 'Solid']])) +
+    html = bgChips() +
       opt('Code', `<textarea class="code" readonly spellcheck="false">${esc(shown)}</textarea>`, 'Image data shortened') +
-      `<div class="note">Self-contained and animated: use it as <code>&lt;img src="logo.svg"&gt;</code>, inline it in HTML, or drop it into Figma/Webflow. ${src.vector ? '' : 'Upload an SVG logo for a much smaller file.'}</div>`;
-    meta = `SVG · ${kb(new Blob([code]).size)}`;
-    btns = `<button type="button" class="btn" data-do="copy">Copy code</button><button type="button" class="btn btn-dark" data-do="svg">Download SVG</button>`;
+      `<div class="note">One self-contained animated file: use it as <code>&lt;img src="logo.svg"&gt;</code>, paste it inline into HTML, or drop it into Figma or Webflow. ${src.vector ? '' : 'Upload an SVG logo for a much smaller file.'} Press ⌘⇧C to copy it from anywhere.</div>`;
+    btns = `<button type="button" class="btn" data-do="svg">Download .svg</button><button type="button" class="btn btn-dark" data-do="copy"><span class="swap">${ICON_COPY}${ICON_CHECK}</span>Copy code</button>`;
   } else {
-    const { w, h } = outSize(ex.frame, ex.quality);
-    html = opt('Frame', frameChips()) +
+    html = opt('Moment', `<div class="well">${timeSlider('at', 'Time', 0, n3(maxTime()), 0.01)}</div>`) +
+      opt('Frame', frameChips()) +
       opt('Quality', chips('quality', [[720, '720p'], [1080, '1080p'], [1440, '1440p']])) +
-      opt('Background', chips('transparent', [[true, 'Transparent'], [false, 'Solid']])) +
-      `<div class="note">"Frames" downloads every frame as a PNG in a .zip, ready for After Effects, Premiere or Keynote.</div>`;
-    meta = `PNG · ${w}×${h}`;
-    btns = `<button type="button" class="btn" data-do="seq">Frames (.zip)</button><button type="button" class="btn btn-dark" data-do="png">Download PNG</button>`;
+      bgChips() +
+      `<div class="note">Need every frame? Download frames saves a PNG sequence of the length below, ready for After Effects, Premiere or Keynote.</div>` +
+      lengthOpt();
+    btns = `<button type="button" class="btn" data-do="seq">Download frames</button><button type="button" class="btn btn-dark" data-do="png">Download PNG</button>`;
   }
   dlgOpts.innerHTML = html;
-  dlgFoot.innerHTML = `<span class="meta">${meta}</span><div class="btns">${btns}</div>`;
+  dlgOpts.querySelectorAll('input[type=range]').forEach(setFill);
+  dlgFoot.innerHTML = `<span class="meta" id="footMeta">${footMeta()}</span><div class="btns">${btns}</div>`;
   updateDlgPreview();
+  if (tabChanged && !opts.first) {
+    moveTabIndicator();
+    for (const el of [dlgOpts, $('#dlgPreview')]) { el.classList.remove('swap-in'); el.offsetWidth; el.classList.add('swap-in'); }
+  }
 }
 
 function exBg() {
@@ -894,15 +1117,19 @@ function codeSVG() { return exportSVG({ intro: S.intro, bg: S.ex.transparent ? n
 function updateDlgPreview() {
   const frame = exTab === 'code' ? 'original' : S.ex.frame;
   const bg = exBg();
-  const str = exportSVG({ intro: exTab !== 'image' && S.ex.length === 'intro', bg, frame });
+  const r = range();
+  // Stills show the exact chosen moment; everything else previews the animation.
+  const str = exTab === 'image'
+    ? exportSVG({ time: +S.ex.at, intro: S.intro, bg, frame })
+    : exportSVG({ intro: exTab === 'code' ? S.intro : r.intro, bg, frame });
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = URL.createObjectURL(new Blob([str], { type: 'image/svg+xml' }));
   dlgImg.src = previewUrl;
-  $('#dlgPreview').classList.toggle('checker', !bg);
-  const box = frameBox(frame);
+  dlgImg.classList.toggle('checker', !bg);
+  const box = frameBox(frame), wide = box.w / box.h >= 1;
   dlgImg.style.aspectRatio = `${box.w} / ${box.h}`;
-  dlgImg.style.width = box.w / box.h >= 1 ? '100%' : 'auto';
-  dlgImg.style.height = box.w / box.h >= 1 ? 'auto' : '52vh';
+  dlgImg.style.width = wide ? '100%' : 'auto';
+  dlgImg.style.height = wide ? 'auto' : '52vh';
 }
 
 dlgOpts.addEventListener('click', e => {
@@ -910,7 +1137,32 @@ dlgOpts.addEventListener('click', e => {
   if (!c || busy) return;
   const k = c.dataset.ex, v = c.dataset.v;
   S.ex[k] = v === 'true' ? true : v === 'false' ? false : isNaN(+v) ? v : +v;
-  save(); renderExport();
+  save();
+  // Structural options re-render; the rest update in place so state changes animate.
+  if (['length', 'lottieFormat'].includes(k) || (k === 'transparent' && exTab === 'code')) {
+    renderExport();
+    const well = dlgOpts.querySelector('.well');
+    if (k === 'length' && well) well.classList.add('reveal');
+    return;
+  }
+  c.parentElement.querySelectorAll('.chip').forEach(ch => { const on = ch === c; ch.classList.toggle('on', on); ch.setAttribute('aria-pressed', on); });
+  $('#footMeta').textContent = footMeta();
+  const hint = $('#lenHint'); if (hint) hint.textContent = `${duration().toFixed(1)}s`;
+  updateDlgPreview();
+});
+let dlgRaf = 0;
+dlgOpts.addEventListener('input', e => {
+  const el = e.target;
+  if (!el.dataset.exr || busy) return;
+  const k = el.dataset.exr;
+  S.ex[k] = +el.value;
+  setFill(el);
+  const out = dlgOpts.querySelector(`[data-exo="${k}"]`);
+  if (out) out.textContent = (+el.value).toFixed(k === 'at' ? 2 : 1) + 's';
+  const hint = $('#lenHint'); if (hint) hint.textContent = `${duration().toFixed(1)}s`;
+  $('#footMeta').textContent = footMeta();
+  save();
+  if (k === 'at' && !dlgRaf) dlgRaf = requestAnimationFrame(() => { dlgRaf = 0; updateDlgPreview(); });
 });
 dlgFoot.addEventListener('click', e => {
   const b = e.target.closest('[data-do]');
@@ -921,9 +1173,14 @@ dlgFoot.addEventListener('click', e => {
 const prog = {
   show(title) {
     busy = true; cancelled = false;
-    dlgFoot.innerHTML = `<span class="meta" id="progTitle">${title}</span><div class="bar"><span id="progBar"></span></div><button type="button" class="btn" id="cancelExport">Cancel</button>`;
+    dlgFoot.innerHTML = `<span class="meta" role="status">${title}</span><div class="bar" role="progressbar" aria-label="${title}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progBar"></span></div><button type="button" class="btn" id="cancelExport">Cancel</button>`;
   },
-  set(p) { const bar = $('#progBar'); if (bar) bar.style.width = (p * 100).toFixed(1) + '%'; },
+  set(p) {
+    const bar = $('#progBar');
+    if (!bar) return;
+    bar.style.width = (p * 100).toFixed(1) + '%';
+    bar.parentElement.setAttribute('aria-valuenow', Math.round(p * 100));
+  },
   hide() { busy = false; if (dlg.open) renderExport(); },
 };
 
@@ -936,14 +1193,25 @@ async function renderFrame(ctx, w, h, t, intro, bg, frame) {
     ctx.drawImage(img, 0, 0, w, h);
   } finally { URL.revokeObjectURL(url); }
 }
+const toPng = c => new Promise(r => c.toBlob(r, 'image/png'));
+const blobToDataURL = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); });
+
+// Frame-by-frame Lottie: one image layer per frame, each visible for exactly one frame.
+function lottieDoc(w, h, fps, assets) {
+  const tr = { o: { a: 0, k: 100 }, r: { a: 0, k: 0 }, p: { a: 0, k: [w / 2, h / 2, 0] }, a: { a: 0, k: [w / 2, h / 2, 0] }, s: { a: 0, k: [100, 100, 100] } };
+  return {
+    v: '5.7.4', fr: fps, ip: 0, op: assets.length, w, h, nm: baseName(), ddd: 0, assets,
+    layers: assets.map((a, i) => ({ ddd: 0, ind: i + 1, ty: 2, nm: a.id, refId: a.id, sr: 1, ks: tr, ao: 0, ip: i, op: i + 1, st: 0, bm: 0 })),
+    markers: [],
+  };
+}
 
 async function doExport(kind) {
   if (!src.href || busy) return;
-  const ex = S.ex;
-  const withIntro = ex.length === 'intro' && S.intro;
+  const ex = S.ex, r = range();
   try {
-    if (kind === 'svg') { download(new Blob([codeSVG()], { type: 'image/svg+xml' }), baseName() + '.svg'); toast('SVG downloaded'); return; }
-    if (kind === 'copy') { await navigator.clipboard.writeText(codeSVG()); toast('SVG code copied'); return; }
+    if (kind === 'svg') { download(new Blob([codeSVG()], { type: 'image/svg+xml' }), baseName() + '.svg'); toast('Downloaded SVG'); return; }
+    if (kind === 'copy') { await copySVG(); return; }
 
     const c = document.createElement('canvas');
     const ctx = c.getContext('2d', { willReadFrequently: kind === 'gif' });
@@ -951,86 +1219,150 @@ async function doExport(kind) {
     if (kind === 'png') {
       const { w, h } = outSize(ex.frame, ex.quality);
       c.width = w; c.height = h;
-      const L = loopLen();
-      const t = (svg.getCurrentTime() % L) + (S.intro ? Math.ceil(S.introDur / L) * L : 0);
-      await renderFrame(ctx, w, h, t, true, exBg(), ex.frame);
-      c.toBlob(b => { download(b, baseName() + '.png'); toast('PNG downloaded'); }, 'image/png');
+      await renderFrame(ctx, w, h, +ex.at, S.intro, exBg(), ex.frame);
+      download(await toPng(c), `${baseName()}-${(+ex.at).toFixed(2)}s.png`);
+      toast('Downloaded PNG');
       return;
     }
 
     if (kind === 'mp4') {
-      if (!('VideoEncoder' in window)) { toast('MP4 export needs Chrome, Edge or Safari 17+'); return; }
+      if (!('VideoEncoder' in window)) { toast('Unable to make MP4 in this browser. Use Chrome, Edge or Safari 17 or later.', true); return; }
       const { w, h } = outSize(ex.frame, ex.quality), fps = ex.fps;
-      const frames = Math.max(1, Math.round(duration() * fps));
+      const frames = Math.max(1, Math.round(r.dur * fps));
       c.width = w; c.height = h;
       prog.show('Rendering video…');
       const { Muxer, ArrayBufferTarget } = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5/+esm');
       const cfg = { codec: 'avc1.640033', width: w, height: h, bitrate: Math.round(w * h * fps * 0.2), framerate: fps };
-      if (!(await VideoEncoder.isConfigSupported(cfg)).supported) throw new Error('this browser cannot encode H.264 at that size, try a lower quality');
+      if (!(await VideoEncoder.isConfigSupported(cfg)).supported) throw new Error('this browser can’t encode video at that size. Choose a lower quality');
       const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h }, fastStart: 'in-memory' });
       let encErr = null;
       const enc = new VideoEncoder({ output: (ch, meta) => muxer.addVideoChunk(ch, meta), error: e => { encErr = e; } });
       enc.configure(cfg);
       for (let i = 0; i < frames; i++) {
         if (cancelled || encErr) break;
-        await renderFrame(ctx, w, h, i / fps, withIntro, solidBg(), ex.frame);
+        await renderFrame(ctx, w, h, r.t0 + i / fps, r.intro, solidBg(), ex.frame);
         const vf = new VideoFrame(c, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
         enc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
         vf.close();
-        if (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 0));
+        if (enc.encodeQueueSize > 8) await new Promise(res => setTimeout(res, 0));
         prog.set((i + 1) / frames);
       }
       await enc.flush(); enc.close();
       if (encErr) throw encErr;
-      if (!cancelled) { muxer.finalize(); download(new Blob([muxer.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4'); toast('Video downloaded'); }
+      if (!cancelled) { muxer.finalize(); download(new Blob([muxer.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4'); toast('Downloaded MP4'); }
       prog.hide();
       return;
     }
 
     if (kind === 'gif') {
       const { w, h } = gifSize(ex.frame, ex.gif), fps = 25;
-      const frames = Math.max(1, Math.round(duration() * fps));
+      const frames = Math.max(1, Math.round(r.dur * fps));
       c.width = w; c.height = h;
       prog.show('Rendering GIF…');
       const { GIFEncoder, quantize, applyPalette } = await import('https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm');
       const gif = GIFEncoder();
       for (let i = 0; i < frames; i++) {
         if (cancelled) break;
-        await renderFrame(ctx, w, h, i / fps, withIntro, solidBg(), ex.frame);
+        await renderFrame(ctx, w, h, r.t0 + i / fps, r.intro, solidBg(), ex.frame);
         const data = ctx.getImageData(0, 0, w, h).data;
         const palette = quantize(data, 256);
         gif.writeFrame(applyPalette(data, palette), w, h, { palette, delay: 1000 / fps });
         prog.set((i + 1) / frames);
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(res => setTimeout(res, 0));
       }
-      if (!cancelled) { gif.finish(); download(new Blob([gif.bytes()], { type: 'image/gif' }), baseName() + '.gif'); toast('GIF downloaded'); }
+      if (!cancelled) { gif.finish(); download(new Blob([gif.bytes()], { type: 'image/gif' }), baseName() + '.gif'); toast('Downloaded GIF'); }
+      prog.hide();
+      return;
+    }
+
+    if (kind === 'lottie') {
+      const dot = ex.lottieFormat === 'dot';
+      const { w, h } = gifSize(ex.frame, ex.lottieSize), fps = ex.lottieFps;
+      const frames = Math.max(1, Math.round(r.dur * fps));
+      c.width = w; c.height = h;
+      prog.show(`Rendering ${dot ? 'dotLottie' : 'Lottie'}…`);
+      const { zipSync, strToU8 } = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm');
+      const assets = [], files = {};
+      for (let i = 0; i < frames; i++) {
+        if (cancelled) break;
+        await renderFrame(ctx, w, h, r.t0 + i / fps, r.intro, exBg(), ex.frame);
+        const png = await toPng(c);
+        const name = `frame_${String(i).padStart(4, '0')}.png`, id = `f${i}`;
+        if (dot) {
+          files['i/' + name] = [new Uint8Array(await png.arrayBuffer()), { level: 0 }];
+          assets.push({ id, w, h, u: '/i/', p: name, e: 0 });
+        } else {
+          assets.push({ id, w, h, u: '', p: await blobToDataURL(png), e: 1 });
+        }
+        prog.set((i + 1) / frames);
+      }
+      if (!cancelled) {
+        const json = JSON.stringify(lottieDoc(w, h, fps, assets));
+        if (dot) {
+          files['manifest.json'] = strToU8(JSON.stringify({ version: '2', generator: 'Iridescent', animations: [{ id: 'iridescent' }] }));
+          files['a/iridescent.json'] = strToU8(json);
+          download(new Blob([zipSync(files, { level: 6 })], { type: 'application/zip' }), baseName() + '.lottie');
+        } else {
+          download(new Blob([json], { type: 'application/json' }), baseName() + '.json');
+        }
+        toast('Downloaded Lottie');
+      }
       prog.hide();
       return;
     }
 
     if (kind === 'seq') {
       const { w, h } = outSize(ex.frame, ex.quality), fps = 30;
-      const frames = Math.max(1, Math.round(duration() * fps));
+      const frames = Math.max(1, Math.round(r.dur * fps));
       c.width = w; c.height = h;
       prog.show('Rendering frames…');
       const { zipSync } = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm');
       const files = {};
       for (let i = 0; i < frames; i++) {
         if (cancelled) break;
-        await renderFrame(ctx, w, h, i / fps, withIntro, exBg(), ex.frame);
-        const blob = await new Promise(r => c.toBlob(r, 'image/png'));
-        files[`frame_${String(i).padStart(4, '0')}.png`] = [new Uint8Array(await blob.arrayBuffer()), { level: 0 }];
+        await renderFrame(ctx, w, h, r.t0 + i / fps, r.intro, exBg(), ex.frame);
+        files[`frame_${String(i).padStart(4, '0')}.png`] = [new Uint8Array(await (await toPng(c)).arrayBuffer()), { level: 0 }];
         prog.set((i + 1) / frames);
       }
-      if (!cancelled) { download(new Blob([zipSync(files)], { type: 'application/zip' }), `${baseName()}-${fps}fps.zip`); toast('Frames downloaded'); }
+      if (!cancelled) { download(new Blob([zipSync(files)], { type: 'application/zip' }), `${baseName()}-${fps}fps.zip`); toast('Downloaded frames'); }
       prog.hide();
     }
   } catch (err) {
     console.error(err);
     prog.hide();
-    toast('Export failed: ' + (err.message || err));
+    toast(`Unable to export. ${err.message ? err.message.replace(/^./, c => c.toUpperCase()) + '.' : 'Try a smaller size or a shorter length.'}`, true);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Live visitors — WebSocket to a Cloudflare Durable Object that counts open
+// connections. The pill stays hidden when the endpoint is unavailable.
+// ---------------------------------------------------------------------------
+(function presence() {
+  if (!('WebSocket' in window) || /^(localhost|127\.|file)/.test(location.hostname || 'file')) return;
+  const pill = $('#livePill'), count = $('#liveCount'), label = $('#liveLabel');
+  let ws, retry = 1000, shown = 0;
+  function show(n) {
+    if (n === shown) return;
+    shown = n;
+    count.textContent = n;
+    label.textContent = n === 1 ? 'online now' : 'online now';
+    pill.title = n === 1 ? 'You’re the only one here right now' : `${n} people are using Iridescent right now`;
+    if (pill.hidden) { pill.hidden = false; requestAnimationFrame(() => pill.classList.add('in')); }
+    count.classList.remove('bump'); count.offsetWidth; count.classList.add('bump');
+  }
+  function connect() {
+    try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/presence`); }
+    catch (e) { return; }
+    ws.onmessage = e => { try { const d = JSON.parse(e.data); if (typeof d.online === 'number') show(Math.max(1, d.online)); } catch (err) {} };
+    ws.onopen = () => { retry = 1000; };
+    ws.onclose = () => { if (retry < 60000) setTimeout(connect, retry *= 2); };
+  }
+  connect();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && ws && ws.readyState > 1) { retry = 1000; connect(); }
+  });
+})();
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -1041,11 +1373,15 @@ window.iridescent = {
   get source() { return { aspect: src.aspect, thickness: src.thick, mask: src.detected, vector: !!src.vector }; },
   set(o) { Object.assign(S, o); save(); buildPanel(); Object.keys(o).some(k => SOURCE_KEYS.has(k)) ? processSource() : schedule(); },
   svg: () => codeSVG(),
+  svgAt: (t, intro = true, w = 800) => exportSVG({ time: t, intro, width: w, height: Math.round(w * geom().H / geom().W) }),
+  copy: copySVG,
   open: openExport,
   export: doExport,
 };
 
 buildPanel();
+panelEl.classList.add('entering');
+setTimeout(() => panelEl.classList.remove('entering'), 1100);
 document.fonts.ready.then(processSource);
 processSource();
 

@@ -3,51 +3,72 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Iridescent — fluid logo animator</title>
-<meta name="description" content="Turn any logo into a fluid, iridescent animation. Export MP4, GIF or a tiny animated SVG.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='g'%3E%3Cstop offset='.3' stop-color='%230a0f5c'/%3E%3Cstop offset='.5' stop-color='%232c78e4'/%3E%3Cstop offset='.62' stop-color='%238fd3ff'/%3E%3Cstop offset='.75' stop-color='%23ffa04a'/%3E%3Cstop offset='.86' stop-color='%23ff4b2f'/%3E%3Cstop offset='1' stop-color='%23ff52c8'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='15' fill='url(%23g)'/%3E%3C/svg%3E">
+<title>Iridescent — Make any logo fluid</title>
+<meta name="description" content="Turn any logo into a fluid, iridescent animation in seconds. Free, in your browser. Export MP4, GIF, Lottie, PNG or a tiny animated SVG.">
+<link rel="canonical" href="https://iridescent-logo.pages.dev/">
+<meta name="theme-color" content="#f1f0ec">
+<meta name="color-scheme" content="light">
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Iridescent">
+<meta property="og:url" content="https://iridescent-logo.pages.dev/">
+<meta property="og:title" content="Iridescent — Make any logo fluid">
+<meta property="og:description" content="Drop in a logo, pick a look, export in seconds. MP4, GIF, Lottie and SVG. Free, in your browser.">
+<meta property="og:image" content="https://iridescent-logo.pages.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The word “fluid” rendered as a glowing, iridescent animation next to the headline “Make any logo fluid.”">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Iridescent — Make any logo fluid">
+<meta name="twitter:description" content="Drop in a logo, pick a look, export in seconds. MP4, GIF, Lottie and SVG.">
+<meta name="twitter:image" content="https://iridescent-logo.pages.dev/og.png">
+<meta name="twitter:image:alt" content="The word “fluid” rendered as a glowing, iridescent animation.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Instrument+Serif&family=Fredoka:wght@500;700&family=Baloo+2:wght@700;800&family=Unbounded:wght@600;800&family=Syne:wght@700;800&family=Bricolage+Grotesque:wght@600;800&family=Archivo+Black&family=Rubik:wght@600;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
 <header class="top">
   <div class="brand">
     <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-name">Iridescent</span>
+    <h1 class="brand-name">Iridescent</h1>
     <span class="brand-sub">Make any logo fluid</span>
+    <span class="live-pill" id="livePill" hidden><span class="live-dot" aria-hidden="true"></span><span><b id="liveCount">1</b> <span id="liveLabel">online now</span></span></span>
   </div>
   <div class="top-actions">
-    <button id="btnUpload" class="btn btn-ghost">Upload logo</button>
-    <div class="menu-wrap">
-      <button id="btnExport" class="btn btn-dark" aria-haspopup="menu" aria-expanded="false">
-        Export
-        <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <div class="menu" id="exportMenu" role="menu" hidden>
-        <button role="menuitem" data-open="video"><b>Video</b><span>MP4 for Instagram, X, LinkedIn</span></button>
-        <button role="menuitem" data-open="gif"><b>GIF</b><span>For Slack, Notion, email</span></button>
-        <button role="menuitem" data-open="code"><b>SVG code</b><span>Tiny animated file for websites</span></button>
-        <button role="menuitem" data-open="image"><b>Image</b><span>PNG still or transparent frames</span></button>
-      </div>
-    </div>
+    <button id="btnSound" class="icon-btn icon-btn-sm" aria-pressed="true" aria-label="Sound" title="Sound on">
+      <span class="swap">
+        <svg class="mi i-a" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8h2.5L10 5v10l-3.5-3H4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M13 7.5a3.5 3.5 0 0 1 0 5M15 5.5a6.5 6.5 0 0 1 0 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <svg class="mi i-b" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8h2.5L10 5v10l-3.5-3H4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m13.5 8 4 4m0-4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </span>
+    </button>
+    <button id="btnUpload" class="btn btn-ghost"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3.5M6.5 7 10 3.5 13.5 7M4 12.5v2A2.5 2.5 0 0 0 6.5 17h7a2.5 2.5 0 0 0 2.5-2.5v-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Upload logo</button>
+    <button id="btnCopy" class="btn" title="Copy SVG code (⌘⇧C)" aria-label="Copy SVG code"><span class="swap"><svg class="mi i-a" viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 4.5A1.5 1.5 0 0 0 11.5 3h-6A2.5 2.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="mi i-b" viewBox="0 0 20 20" aria-hidden="true"><path d="m4.5 10.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="btn-label">Copy SVG</span></button>
+    <button id="btnExport" class="btn btn-dark" aria-haspopup="dialog">Export</button>
   </div>
 </header>
 
 <main class="layout">
   <section class="stage" id="stage">
     <div class="canvas" id="canvas">
-      <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Animated logo preview">
+      <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Animated preview of your logo">
         <defs><mask id="pvm" maskUnits="userSpaceOnUse" mask-type="alpha" style="mask-type:alpha"><image id="pvImg" preserveAspectRatio="none"/></mask></defs>
         <g id="pvDyn"></g>
       </svg>
     </div>
-    <div class="drop-hint" id="dropHint"><div>Drop your logo<small>PNG · SVG · JPG · WebP</small></div></div>
+    <div class="drop-hint" id="dropHint" aria-hidden="true"><div>Drop to animate<small>SVG, PNG, JPG, WebP, AVIF, GIF and more</small></div></div>
     <div class="transport">
-      <button class="icon-btn" id="btnPlay" title="Play / pause (Space)" aria-label="Play or pause">
-        <svg viewBox="0 0 24 24" class="i-pause"><rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/></svg>
-        <svg viewBox="0 0 24 24" class="i-play"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+      <button class="icon-btn" id="btnPlay" title="Pause (Space)" aria-label="Pause">
+        <span class="swap">
+          <svg viewBox="0 0 24 24" class="i-pause" aria-hidden="true"><rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/></svg>
+          <svg viewBox="0 0 24 24" class="i-play" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+        </span>
       </button>
       <button class="icon-btn" id="btnReplay" title="Replay intro" aria-label="Replay intro">
         <svg viewBox="0 0 24 24"><path d="M5.5 9.5A7 7 0 1 1 5 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 4.5v5.5h5.5z"/></svg>
@@ -59,29 +80,32 @@
   <aside class="panel" id="panel"></aside>
 </main>
 
-<dialog class="dlg" id="exportDlg">
+<dialog class="dlg" id="exportDlg" aria-label="Export">
   <form method="dialog" class="dlg-inner" id="exportForm">
     <header class="dlg-head">
-      <div class="tabs" role="tablist" id="exportTabs">
-        <button type="button" role="tab" data-tab="video">Video</button>
-        <button type="button" role="tab" data-tab="gif">GIF</button>
-        <button type="button" role="tab" data-tab="code">SVG code</button>
-        <button type="button" role="tab" data-tab="image">Image</button>
+      <div class="tabs" role="tablist" id="exportTabs" aria-label="Export format">
+        <span class="tab-ind" aria-hidden="true"></span>
+        <button type="button" role="tab" data-tab="video"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.75" y="5" width="10.5" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.25 9 17 6.75v6.5L13.25 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Video</button>
+        <button type="button" role="tab" data-tab="gif"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.75" y="4" width="14.5" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 8.5H6.25v3h1.5V10.2M10 8.5v3M12.5 11.5v-3h1.75M12.5 10h1.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>GIF</button>
+        <button type="button" role="tab" data-tab="lottie"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 15.5c3.5 0 4-11 7.5-11 1.6 0 2.5 1.3 3 2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 10.25h6.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Lottie</button>
+        <button type="button" role="tab" data-tab="code"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 6.5-3.5 3.5L7 13.5M13 6.5l3.5 3.5-3.5 3.5M11 4.5l-2 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>SVG code</button>
+        <button type="button" role="tab" data-tab="image"><svg class="mi" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7.25" cy="8" r="1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m3.5 14.5 4-3.75 3 2.5 2.5-2 3.5 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Image</button>
       </div>
       <button class="x-btn" value="close" aria-label="Close">
         <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
     </header>
     <div class="dlg-body">
-      <div class="dlg-preview" id="dlgPreview"><img id="dlgImg" alt="Export preview"></div>
+      <div class="dlg-preview" id="dlgPreview"><img id="dlgImg" alt="Preview of the export"></div>
       <div class="dlg-opts" id="dlgOpts"></div>
     </div>
     <footer class="dlg-foot" id="dlgFoot"></footer>
   </form>
 </dialog>
 
-<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,.svg" hidden>
+<input type="file" id="file" accept="image/*,.svg,.svgz,.png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.ico,.tif,.tiff,.heic,.heif" hidden>
 <div class="toast" id="toast" role="status"></div>
-<script src="app.js?v=3" defer></script>
+<script src="kit.js?v=7" defer></script>
+<script src="app.js?v=7" defer></script>
 </body>
 </html>
